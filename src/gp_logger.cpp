@@ -43,6 +43,8 @@ void Logger::write(const std::string& message, LogLevel level) {
 
     std::lock_guard<std::mutex> lock(mtx);
 
+    if (logDir.empty()) return;  // Logger not initialized yet
+
     char dateStr[16];
     strftime(dateStr, sizeof(dateStr), "%Y%m%d", &lt);
     std::string logFile = logDir + "\\gp_" + std::string(dateStr) + ".log";

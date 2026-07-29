@@ -1,5 +1,6 @@
 #include "gp_config.h"
 #include "gp_json.h"
+#include "gp_logger.h"
 #include <windows.h>
 #include <fstream>
 #include <sstream>
@@ -31,10 +32,19 @@ AppConfig AppConfig::load() {
     ss << f.rdbuf();
     std::string content = ss.str();
 
+    // Skip UTF-8 BOM if present (0xEF 0xBB 0xBF)
+    if (content.size() >= 3 &&
+        (unsigned char)content[0] == 0xEF &&
+        (unsigned char)content[1] == 0xBB &&
+        (unsigned char)content[2] == 0xBF) {
+        content = content.substr(3);
+    }
+
     JsonValue root = JsonValue::parse(content);
     if (!root.isObject()) return cfg;
 
-    if (auto* v = root.find("AppVersion")) cfg.appVersion = v->asString("2.0.0");
+    // AppVersion is NOT loaded from config - always uses compiled version
+    cfg.appVersion = "2.0.0";
     if (auto* v = root.find("CheckIntervalSeconds")) cfg.checkIntervalSeconds = v->asInt(4);
     if (auto* v = root.find("TapMetric")) cfg.tapMetric = v->asInt(50);
     if (auto* v = root.find("MainMetric")) cfg.mainMetric = v->asInt(16);

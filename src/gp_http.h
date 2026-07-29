@@ -3,7 +3,7 @@
 
 namespace gp {
 
-// WinHTTP wrapper supporting HTTPS with self-signed cert bypass
+// HTTP wrapper using curl.exe (handles corporate TLS middlebox)
 struct HttpResponse {
     int statusCode = 0;
     std::string body;

@@ -10,6 +10,11 @@
 #include <algorithm>
 #include <cstring>
 
+// Required for GetAdaptersAddresses gateway info on Windows 10 build 16299+
+#ifndef GAA_FLAG_INCLUDE_GATEWAYS
+#define GAA_FLAG_INCLUDE_GATEWAYS 0x0080
+#endif
+
 namespace gp {
 
 const std::vector<std::string> RouteEngine::counterRoutes = {
@@ -102,7 +107,7 @@ bool RouteEngine::cacheMainNic() {
     ULONG bufLen = 15000;
     std::vector<BYTE> buf(bufLen);
 
-    DWORD flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    DWORD flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS;
     DWORD dwRet = GetAdaptersAddresses(AF_INET, flags, nullptr,
                                        reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buf.data()), &bufLen);
     if (dwRet == ERROR_BUFFER_OVERFLOW) {

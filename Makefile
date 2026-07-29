@@ -2,7 +2,7 @@ CXX = g++
 RC = windres
 CXXFLAGS = -std=c++17 -municode -O2 -Wall -Wno-unused-parameter -Wno-unused-variable -Wno-format
 LDFLAGS = -municode -mwindows -static -static-libgcc -static-libstdc++
-LIBS = -lws2_32 -lwinhttp -liphlpapi -lbcrypt -lcomctl32 -lshell32 -lgdi32 -luser32 -ladvapi32
+LIBS = -lws2_32 -liphlpapi -lbcrypt -lcomctl32 -lshell32 -lgdi32 -luser32 -ladvapi32
 
 SRC_DIR = src
 SRC = $(wildcard $(SRC_DIR)/*.cpp)

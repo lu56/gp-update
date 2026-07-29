@@ -1,164 +1,303 @@
 #include "gp_http.h"
+#include "gp_logger.h"
 #include <windows.h>
-#include <winhttp.h>
 #include <vector>
+#include <string>
 #include <cstring>
+#include <cstdio>
 
 namespace gp {
 
-// Parse URL into host, path, port, isHttps
-struct UrlParts {
-    std::wstring host;
-    std::wstring path;
-    int port = 443;
-    bool isHttps = true;
-};
-
-static bool parseUrl(const std::string& url, UrlParts& out) {
-    // Expect: https://host:port/path or http://host:port/path
-    const char* p = url.c_str();
-    bool https = true;
-    if (strncmp(p, "https://", 8) == 0) { https = true; p += 8; }
-    else if (strncmp(p, "http://", 7) == 0) { https = false; p += 7; }
-    else return false;
-
-    out.isHttps = https;
-    out.port = https ? 443 : 80;
-
-    // Find end of host:port (next / or end)
-    const char* pathStart = strchr(p, '/');
-    std::string hostPort;
-    if (pathStart) {
-        hostPort.assign(p, pathStart - p);
-        out.path = std::wstring(pathStart, pathStart + strlen(pathStart));
-        // Convert to wide
-        int len = MultiByteToWideChar(CP_UTF8, 0, pathStart, -1, nullptr, 0);
-        std::wstring ws(len, 0);
-        MultiByteToWideChar(CP_UTF8, 0, pathStart, -1, &ws[0], len);
-        out.path = ws;
-        if (!out.path.empty() && out.path.back() == 0) out.path.pop_back();
-    } else {
-        hostPort.assign(p);
-        out.path = L"/";
+// Find curl.exe on the system. Try System32 first (Windows 10+).
+static std::string findCurlExe() {
+    // Try common locations
+    const char* paths[] = {
+        "C:\\Windows\\System32\\curl.exe",
+        "C:\\Windows\\SysWOW64\\curl.exe",
+        nullptr
+    };
+    for (int i = 0; paths[i]; i++) {
+        DWORD attr = GetFileAttributesA(paths[i]);
+        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            return std::string(paths[i]);
+        }
     }
-
-    // Split host:port
-    auto colon = hostPort.find(':');
-    if (colon != std::string::npos) {
-        std::string host = hostPort.substr(0, colon);
-        std::string portStr = hostPort.substr(colon + 1);
-        out.port = atoi(portStr.c_str());
-        int len = MultiByteToWideChar(CP_UTF8, 0, host.c_str(), -1, nullptr, 0);
-        out.host.resize(len);
-        MultiByteToWideChar(CP_UTF8, 0, host.c_str(), -1, &out.host[0], len);
-        if (!out.host.empty() && out.host.back() == 0) out.host.pop_back();
-    } else {
-        int len = MultiByteToWideChar(CP_UTF8, 0, hostPort.c_str(), -1, nullptr, 0);
-        out.host.resize(len);
-        MultiByteToWideChar(CP_UTF8, 0, hostPort.c_str(), -1, &out.host[0], len);
-        if (!out.host.empty() && out.host.back() == 0) out.host.pop_back();
-    }
-
-    return true;
+    // Fallback: just use "curl.exe" (hope it's in PATH)
+    return std::string("curl.exe");
 }
 
-static HttpResponse doRequest(const std::string& url, const std::string& method,
-                              const std::string& body, int timeoutSec) {
-    HttpResponse resp;
+// Run curl.exe, capture stdout. No stdin (use file for POST body).
+static std::string runCurlExe(const std::string& args, int timeoutMs, DWORD* exitCode = nullptr) {
+    std::string result;
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), nullptr, TRUE};
+    HANDLE hStdoutR = nullptr, hStdoutW = nullptr;
+    CreatePipe(&hStdoutR, &hStdoutW, &sa, 0);
+    // Parent's read end must not be inherited
+    SetHandleInformation(hStdoutR, HANDLE_FLAG_INHERIT, 0);
 
-    UrlParts parts;
-    if (!parseUrl(url, parts)) {
-        resp.error = "Invalid URL";
-        return resp;
+    STARTUPINFOA si = {sizeof(si)};
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = nullptr;  // No stdin for GUI app
+    si.hStdOutput = hStdoutW;
+    si.hStdError = hStdoutW;
+
+    PROCESS_INFORMATION pi = {};
+    std::string curlPath = findCurlExe();
+    std::string cmd = curlPath + " " + args;
+
+    Logger::instance().write("[HTTP] runCurlExe cmd=" + cmd, LogLevel::Info);
+    Logger::instance().write("[HTTP] runCurlExe timeoutMs=" + std::to_string(timeoutMs), LogLevel::Info);
+
+    bool ok = CreateProcessA(nullptr, const_cast<char*>(cmd.c_str()), nullptr, nullptr, TRUE,
+                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    if (!ok) {
+        DWORD err = GetLastError();
+        Logger::instance().write("[HTTP] CreateProcessA FAILED, error=" + std::to_string(err), LogLevel::Error);
+        if (exitCode) *exitCode = (DWORD)-1;
+        CloseHandle(hStdoutR);
+        CloseHandle(hStdoutW);
+        return "ERROR: curl.exe not found (CreateProcess failed, err=" + std::to_string(err) + ")";
     }
 
-    HINTERNET hSession = WinHttpOpen(L"GatewayPolicy",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) { resp.error = "WinHttpOpen failed"; return resp; }
+    Logger::instance().write("[HTTP] CreateProcessA OK, pid=" + std::to_string(pi.dwProcessId), LogLevel::Info);
 
-    WinHttpSetTimeouts(hSession, timeoutSec * 1000, timeoutSec * 1000,
-                       timeoutSec * 1000, timeoutSec * 1000);
+    // Close child's write end in parent
+    CloseHandle(hStdoutW);
 
-    HINTERNET hConnect = WinHttpConnect(hSession, parts.host.c_str(),
-        parts.port, 0);
-    if (!hConnect) { resp.error = "WinHttpConnect failed"; WinHttpCloseHandle(hSession); return resp; }
-
-    DWORD flags = WINHTTP_FLAG_REFRESH;
-    if (parts.isHttps) flags |= WINHTTP_FLAG_SECURE;
-
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect,
-        (method == "POST") ? L"POST" : L"GET",
-        parts.path.c_str(), nullptr, WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hRequest) { resp.error = "WinHttpOpenRequest failed"; WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return resp; }
-
-    // Ignore self-signed cert errors
-    if (parts.isHttps) {
-        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-                         SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-                         SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS,
-                        &secFlags, sizeof(secFlags));
-    }
-
-    BOOL bResult = FALSE;
-    if (method == "POST") {
-        const wchar_t* headers = L"Content-Type: application/json\r\n";
-        bResult = WinHttpSendRequest(hRequest, headers, (DWORD)-1,
-            (LPVOID)body.c_str(), (DWORD)body.size(), (DWORD)body.size(), 0);
-    } else {
-        bResult = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-            WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-    }
-
-    if (!bResult) {
-        resp.error = "WinHttpSendRequest failed: " + std::to_string(GetLastError());
-        WinHttpCloseHandle(hRequest); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession);
-        return resp;
-    }
-
-    if (!WinHttpReceiveResponse(hRequest, nullptr)) {
-        resp.error = "WinHttpReceiveResponse failed: " + std::to_string(GetLastError());
-        WinHttpCloseHandle(hRequest); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession);
-        return resp;
-    }
-
-    // Status code
-    DWORD statusCode = 0;
-    DWORD statusCodeSize = sizeof(statusCode);
-    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                       WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX);
-    resp.statusCode = (int)statusCode;
-
-    // Read body
-    DWORD bytesAvailable = 0;
+    // Read stdout with timeout using PeekNamedPipe
+    DWORD startTime = GetTickCount();
+    char buf[8192];
     DWORD bytesRead = 0;
-    std::vector<char> bodyBuf;
-    while (WinHttpQueryDataAvailable(hRequest, &bytesAvailable) && bytesAvailable > 0) {
-        std::vector<char> chunk(bytesAvailable);
-        if (WinHttpReadData(hRequest, chunk.data(), bytesAvailable, &bytesRead) && bytesRead > 0) {
-            bodyBuf.insert(bodyBuf.end(), chunk.begin(), chunk.begin() + bytesRead);
-        } else break;
-    }
-    resp.body.assign(bodyBuf.begin(), bodyBuf.end());
+    DWORD lastLogTime = startTime;
 
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-    return resp;
+    while (true) {
+        // Check if process has exited
+        DWORD exitCd = 0;
+        if (GetExitCodeProcess(pi.hProcess, &exitCd) && exitCd != STILL_ACTIVE) {
+            // Process exited, read ALL remaining data (loop until pipe empty)
+            DWORD available = 0;
+            while (PeekNamedPipe(hStdoutR, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+                DWORD toRead = sizeof(buf) < available ? sizeof(buf) : available;
+                if (ReadFile(hStdoutR, buf, toRead, &bytesRead, nullptr) && bytesRead > 0) {
+                    result.append(buf, bytesRead);
+                } else {
+                    break;
+                }
+            }
+            Logger::instance().write("[HTTP] curl exited, code=" + std::to_string(exitCd) +
+                                     ", outputLen=" + std::to_string(result.size()), LogLevel::Info);
+            if (exitCode) *exitCode = exitCd;
+            break;
+        }
+
+        // Check for data
+        DWORD available = 0;
+        if (PeekNamedPipe(hStdoutR, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+            DWORD toRead = sizeof(buf) < available ? sizeof(buf) : available;
+            if (ReadFile(hStdoutR, buf, toRead, &bytesRead, nullptr) && bytesRead > 0) {
+                result.append(buf, bytesRead);
+            }
+        } else {
+            // No data yet, sleep briefly
+            Sleep(50);
+        }
+
+        // Periodic log every 2 seconds
+        DWORD now = GetTickCount();
+        if (now - lastLogTime > 2000) {
+            Logger::instance().write("[HTTP] still waiting for curl... elapsed=" +
+                                     std::to_string(now - startTime) + "ms, outputLen=" +
+                                     std::to_string(result.size()), LogLevel::Info);
+            lastLogTime = now;
+        }
+
+        // Check timeout
+        DWORD elapsed = GetTickCount() - startTime;
+        if (elapsed > (DWORD)timeoutMs) {
+            Logger::instance().write("[HTTP] TIMEOUT after " + std::to_string(elapsed) +
+                                     "ms, killing curl", LogLevel::Warning);
+            TerminateProcess(pi.hProcess, 1);
+            if (exitCode) *exitCode = 1;
+            result = "ERROR: curl timeout";
+            break;
+        }
+    }
+
+    // Ensure process is fully terminated
+    WaitForSingleObject(pi.hProcess, 2000);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hStdoutR);
+
+    return result;
+}
+
+// Parse curl -w output: body + "\n" + status_code
+static void parseCurlOutput(const std::string& output, HttpResponse& resp) {
+    if (output.empty()) {
+        resp.error = "No response from curl";
+        return;
+    }
+
+    // Find the last newline - everything after it is the status code
+    auto lastNl = output.rfind('\n');
+    if (lastNl != std::string::npos && lastNl < output.size() - 1) {
+        std::string statusStr = output.substr(lastNl + 1);
+        // Trim whitespace/carriage returns
+        while (!statusStr.empty() && (statusStr.back() == '\r' || statusStr.back() == '\n' ||
+               statusStr.back() == ' ' || statusStr.back() == '\t')) {
+            statusStr.pop_back();
+        }
+        // Check if it's a valid status code (3 digits)
+        if (statusStr.size() >= 3 && statusStr.find_first_not_of("0123456789") == std::string::npos) {
+            resp.statusCode = atoi(statusStr.c_str());
+            resp.body = output.substr(0, lastNl);
+            // Remove trailing \r from body
+            if (!resp.body.empty() && resp.body.back() == '\r') resp.body.pop_back();
+            return;
+        }
+    }
+
+    // No valid status code found - treat entire output as body
+    resp.statusCode = 0;
+    resp.body = output;
+}
+
+// Write POST body to temp file, return temp file path
+static std::string writeTempBody(const std::string& body) {
+    char tempPath[MAX_PATH] = {0};
+    GetTempPathA(MAX_PATH, tempPath);
+    char tempFile[MAX_PATH] = {0};
+    GetTempFileNameA(tempPath, "gpbd", 0, tempFile);
+    FILE* f = fopen(tempFile, "wb");
+    if (f) {
+        fwrite(body.c_str(), 1, body.size(), f);
+        fclose(f);
+        return std::string(tempFile);
+    }
+    return "";
 }
 
 HttpResponse httpPost(const std::string& url, const std::string& jsonBody, int timeoutSec) {
-    return doRequest(url, "POST", jsonBody, timeoutSec);
+    HttpResponse resp;
+
+    // Write body to temp file to avoid stdin pipe issues
+    std::string tempBody = writeTempBody(jsonBody);
+    if (tempBody.empty()) {
+        resp.error = "Failed to create temp file for POST body";
+        Logger::instance().write("[HTTP] httpPost: writeTempBody failed", LogLevel::Error);
+        return resp;
+    }
+
+    Logger::instance().write("[HTTP] httpPost: url=" + url + " bodyLen=" + std::to_string(jsonBody.size()), LogLevel::Info);
+
+    // Use -d @file to read body from file, -w for status code
+    // Note: % not %% — CreateProcessA passes the string as-is, no escaping needed
+    std::string args = "-k -s -m " + std::to_string(timeoutSec) +
+                       " -X POST -H \"Content-Type: application/json\"" +
+                       " -d @" + tempBody +
+                       " -w \"\\n%{http_code}\"" +
+                       " \"" + url + "\"";
+
+    DWORD exitCode = 0;
+    int timeoutMs = timeoutSec * 1000 + 5000;
+    std::string output = runCurlExe(args, timeoutMs, &exitCode);
+
+    // Clean up temp file
+    DeleteFileA(tempBody.c_str());
+
+    Logger::instance().write("[HTTP] httpPost: runCurlExe returned exitCode=" + std::to_string(exitCode) +
+                             " outputLen=" + std::to_string(output.size()), LogLevel::Info);
+
+    if (output.rfind("ERROR:", 0) == 0) {
+        resp.error = output;
+        Logger::instance().write("[HTTP] httpPost: error: " + output, LogLevel::Warning);
+        return resp;
+    }
+
+    if (exitCode != 0) {
+        resp.error = "curl exit code " + std::to_string(exitCode);
+        if (!output.empty()) resp.error += ": " + output;
+        return resp;
+    }
+
+    parseCurlOutput(output, resp);
+    return resp;
 }
 
 HttpResponse httpGet(const std::string& url, int timeoutSec) {
-    return doRequest(url, "GET", "", timeoutSec);
+    HttpResponse resp;
+
+    std::string args = "-k -s -m " + std::to_string(timeoutSec) +
+                       " -w \"\\n%{http_code}\"" +
+                       " \"" + url + "\"";
+
+    DWORD exitCode = 0;
+    int timeoutMs = timeoutSec * 1000 + 5000;
+    std::string output = runCurlExe(args, timeoutMs, &exitCode);
+
+    if (output.rfind("ERROR:", 0) == 0) {
+        resp.error = output;
+        return resp;
+    }
+
+    if (exitCode != 0) {
+        resp.error = "curl exit code " + std::to_string(exitCode);
+        if (!output.empty()) resp.error += ": " + output;
+        return resp;
+    }
+
+    parseCurlOutput(output, resp);
+    return resp;
 }
 
 HttpResponse httpDownload(const std::string& url, int timeoutSec) {
-    return doRequest(url, "GET", "", timeoutSec);
+    HttpResponse resp;
+
+    // Download to a temp file, then read back (handles binary safely)
+    char tempPath[MAX_PATH] = {0};
+    GetTempPathA(MAX_PATH, tempPath);
+    char tempFile[MAX_PATH] = {0};
+    GetTempFileNameA(tempPath, "gpdl", 0, tempFile);
+
+    std::string args = "-k -s -f -m " + std::to_string(timeoutSec) +
+                       " -o \"" + std::string(tempFile) + "\"" +
+                       " \"" + url + "\"";
+
+    DWORD exitCode = 0;
+    int timeoutMs = timeoutSec * 1000 + 5000;
+    runCurlExe(args, timeoutMs, &exitCode);
+
+    if (exitCode != 0 && exitCode != 22) { // 22 = HTTP error (e.g. 404)
+        resp.error = "curl download exit code " + std::to_string(exitCode);
+        DeleteFileA(tempFile);
+        return resp;
+    }
+
+    // Read the downloaded file
+    FILE* f = fopen(tempFile, "rb");
+    if (!f) {
+        resp.error = "Failed to read downloaded file";
+        DeleteFileA(tempFile);
+        return resp;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long fileSize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (fileSize > 0) {
+        std::vector<char> data(fileSize);
+        fread(data.data(), 1, fileSize, f);
+        resp.body.assign(data.begin(), data.end());
+        resp.statusCode = 200;
+    } else {
+        resp.error = "Downloaded file is empty";
+    }
+
+    fclose(f);
+    DeleteFileA(tempFile);
+    return resp;
 }
 
 std::string urlEncode(const std::string& s) {
