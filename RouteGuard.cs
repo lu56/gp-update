@@ -160,33 +160,26 @@ public class RouteGuard
     /// </summary>
     private void ApplyCounterRoutes()
     {
-        _fixing = true;
-        State = MonitorState.Fixing;
-        OnStateChanged?.Invoke(State);
+        // Phase 1: Check if anything actually needs fixing (no state change)
+        bool needFix = false;
+        var routesToAdd = new List<(string cidr, string gateway, int ifIndex, int metric, string label)>();
 
         try
         {
-            bool needFix = false;
-
-            // Step 1: Add /2 counter-routes for public traffic → main NIC
+            // Step 1: Check /2 counter-routes for public traffic → main NIC
             if (!string.IsNullOrEmpty(_mainGateway) && _mainIfIndex > 0)
             {
                 foreach (var prefix in CounterRoutes)
                 {
                     if (!CounterRouteExists(prefix, _mainIfIndex))
                     {
-                        RunRoute($"add {prefix} {_mainGateway} if {_mainIfIndex} metric {_config.MainMetric}");
-                        Log($"Counter-route ADD: {prefix} -> Main NIC (if={_mainIfIndex}, gw={_mainGateway}, metric={_config.MainMetric})", LogLevel.Info);
+                        routesToAdd.Add((prefix, _mainGateway, _mainIfIndex, _config.MainMetric, "Counter-route"));
                         needFix = true;
                     }
                 }
             }
-            else
-            {
-                Log("Cannot add counter-routes: main NIC gateway not detected", LogLevel.Warning);
-            }
 
-            // Step 2: Ensure private networks → TAP (more specific than /2)
+            // Step 2: Check private networks → TAP
             var managedTaps = GetManagedAdapters();
             if (managedTaps.Count > 0)
             {
@@ -199,23 +192,14 @@ public class RouteGuard
                     {
                         if (!PrivateRouteExists(net, tapIf))
                         {
-                            RunRoute($"add {net} {tapGw} if {tapIf} metric 20");
-                            Log($"Private route ADD: {net} -> TAP (if={tapIf}, gw={tapGw})", LogLevel.Info);
+                            routesToAdd.Add((net, tapGw, tapIf, 20, "Private route"));
                             needFix = true;
                         }
                     }
                 }
-                else if (!_steadyState)
-                {
-                    Log($"TAP gateway not found for if={tapIf}, skipping private route setup", LogLevel.Warning);
-                }
-            }
-            else if (!_steadyState)
-            {
-                Log("No managed TAP adapter found, skipping private route setup", LogLevel.Warning);
             }
 
-            // Step 3: Apply custom route rules
+            // Step 3: Check custom route rules
             if (!string.IsNullOrEmpty(_mainGateway) && managedTaps.Count > 0)
             {
                 int tapIf = managedTaps[0].IfIndex;
@@ -227,8 +211,7 @@ public class RouteGuard
                     {
                         if (!PrivateRouteExists(rule.Key, tapIf))
                         {
-                            RunRoute($"add {rule.Key} {tapGw} if {tapIf} metric 20");
-                            Log($"Custom route ADD: {rule.Key} -> TAP", LogLevel.Info);
+                            routesToAdd.Add((rule.Key, tapGw, tapIf, 20, "Custom route"));
                             needFix = true;
                         }
                     }
@@ -236,37 +219,47 @@ public class RouteGuard
                     {
                         if (!CounterRouteExists(rule.Key, _mainIfIndex))
                         {
-                            RunRoute($"add {rule.Key} {_mainGateway} if {_mainIfIndex} metric {_config.MainMetric}");
-                            Log($"Custom route ADD: {rule.Key} -> Main NIC", LogLevel.Info);
+                            routesToAdd.Add((rule.Key, _mainGateway, _mainIfIndex, _config.MainMetric, "Custom route"));
                             needFix = true;
                         }
                     }
                 }
             }
 
-            if (needFix)
-            {
-                _steadyState = false;
-                _config.TotalFixes++;
-                _config.LastFixTime = DateTime.Now;
-                _config.Save();
-                Log($"Counter-routes applied (total fixes: {_config.TotalFixes})", LogLevel.Info);
-                _lastFixTime = DateTime.Now;
-
-                OnFixCompleted?.Invoke();
-
-                if (_config.BarkEnabled && !string.IsNullOrEmpty(_config.BarkServer))
-                {
-                    _ = SendBarkNotification();
-                }
-            }
-            else
+            // Phase 2: Only enter Fixing state if we actually need to add routes
+            if (!needFix)
             {
                 if (!_steadyState)
                 {
                     Log("All routes verified OK — monitoring (steady state)", LogLevel.Info);
                     _steadyState = true;
                 }
+                return;  // Stay in Running state, no flicker
+            }
+
+            _fixing = true;
+            State = MonitorState.Fixing;
+            OnStateChanged?.Invoke(State);
+            _steadyState = false;
+
+            // Phase 3: Actually add the missing routes
+            foreach (var r in routesToAdd)
+            {
+                RunRoute($"add {r.cidr} {r.gateway} if {r.ifIndex} metric {r.metric}");
+                Log($"{r.label} ADD: {r.cidr} -> if={r.ifIndex} gw={r.gateway} metric={r.metric}", LogLevel.Info);
+            }
+
+            _config.TotalFixes++;
+            _config.LastFixTime = DateTime.Now;
+            _config.Save();
+            Log($"Counter-routes applied (total fixes: {_config.TotalFixes})", LogLevel.Info);
+            _lastFixTime = DateTime.Now;
+
+            OnFixCompleted?.Invoke();
+
+            if (_config.BarkEnabled && !string.IsNullOrEmpty(_config.BarkServer))
+            {
+                _ = SendBarkNotification();
             }
         }
         catch (Exception ex)
@@ -275,9 +268,12 @@ public class RouteGuard
         }
         finally
         {
-            _fixing = false;
-            State = MonitorState.Running;
-            OnStateChanged?.Invoke(State);
+            if (_fixing)
+            {
+                _fixing = false;
+                State = MonitorState.Running;
+                OnStateChanged?.Invoke(State);
+            }
         }
     }
 
