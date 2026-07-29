@@ -17,6 +17,8 @@ public class RouteGuard
     private string _routeTableCache = "";
     private DateTime _routeTableCacheTime = DateTime.MinValue;
     private string _lastNicLog = "";  // dedup: only log when NIC info changes
+    private bool _wasHijacked = false;  // only log hijack on state transition
+    private bool _steadyState = false;  // suppress logs when nothing changes
 
     // /2 counter-routes that override VPN's /1 hijack
     private static readonly string[] CounterRoutes = {
@@ -111,7 +113,20 @@ public class RouteGuard
             if (RouteExists("0.0.0.0/1") || RouteExists("128.0.0.0/1"))
             {
                 hijacked = true;
-                Log("Detected VPN def1 hijack route (0.0.0.0/1 or 128.0.0.0/1)", LogLevel.Info);
+                if (!_wasHijacked)
+                {
+                    Log("Detected VPN def1 hijack route (0.0.0.0/1 or 128.0.0.0/1)", LogLevel.Info);
+                    _wasHijacked = true;
+                }
+            }
+            else
+            {
+                if (_wasHijacked)
+                {
+                    Log("VPN hijack cleared — no longer detected", LogLevel.Info);
+                    _wasHijacked = false;
+                    _steadyState = false;
+                }
             }
 
             // Secondary check: TAP has default route with very low metric
@@ -121,7 +136,11 @@ public class RouteGuard
                 if (metric > 0 && metric < 10)
                 {
                     hijacked = true;
-                    Log($"TAP adapter {tap.Name} has low metric default route (metric={metric})", LogLevel.Info);
+                    if (!_wasHijacked)
+                    {
+                        Log($"TAP adapter {tap.Name} has low metric default route (metric={metric})", LogLevel.Info);
+                        _wasHijacked = true;
+                    }
                 }
             }
 
@@ -156,13 +175,9 @@ public class RouteGuard
                 {
                     if (!CounterRouteExists(prefix, _mainIfIndex))
                     {
-                        var result = RunRoute($"add {prefix} {_mainGateway} if {_mainIfIndex} metric {_config.MainMetric}");
+                        RunRoute($"add {prefix} {_mainGateway} if {_mainIfIndex} metric {_config.MainMetric}");
                         Log($"Counter-route ADD: {prefix} -> Main NIC (if={_mainIfIndex}, gw={_mainGateway}, metric={_config.MainMetric})", LogLevel.Info);
                         needFix = true;
-                    }
-                    else
-                    {
-                        Log($"Counter-route OK: {prefix} already on if={_mainIfIndex}", LogLevel.Info);
                     }
                 }
             }
@@ -188,18 +203,14 @@ public class RouteGuard
                             Log($"Private route ADD: {net} -> TAP (if={tapIf}, gw={tapGw})", LogLevel.Info);
                             needFix = true;
                         }
-                        else
-                        {
-                            Log($"Private route OK: {net} already on if={tapIf}", LogLevel.Info);
-                        }
                     }
                 }
-                else
+                else if (!_steadyState)
                 {
                     Log($"TAP gateway not found for if={tapIf}, skipping private route setup", LogLevel.Warning);
                 }
             }
-            else
+            else if (!_steadyState)
             {
                 Log("No managed TAP adapter found, skipping private route setup", LogLevel.Warning);
             }
@@ -235,6 +246,7 @@ public class RouteGuard
 
             if (needFix)
             {
+                _steadyState = false;
                 _config.TotalFixes++;
                 _config.LastFixTime = DateTime.Now;
                 _config.Save();
@@ -250,7 +262,11 @@ public class RouteGuard
             }
             else
             {
-                Log("No fix needed — all routes already in place", LogLevel.Info);
+                if (!_steadyState)
+                {
+                    Log("All routes verified OK — monitoring (steady state)", LogLevel.Info);
+                    _steadyState = true;
+                }
             }
         }
         catch (Exception ex)
