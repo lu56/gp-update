@@ -1,0 +1,32 @@
+﻿name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        run: dotnet publish GatewayPolicy.csproj -c Release -o publish --nologo
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: publish/GatewayPolicy.exe
+          name: ${{ github.ref_name }}
+          body: |
+            GatewayPolicy ${{ github.ref_name }}
+            
+            Download GatewayPolicy.exe and place it on your Desktop.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
