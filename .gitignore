@@ -1,0 +1,21 @@
+# Build output
+bin/
+obj/
+publish/
+publish-nosingle/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Logs
+logs/
+
+# Config (contains sensitive data)
+config.json
+
+# OS
+Thumbs.db
+desktop.ini

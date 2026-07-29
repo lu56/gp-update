@@ -1,0 +1,518 @@
+using System.Net.NetworkInformation;
+using System.Diagnostics;
+using System.Net;
+
+namespace GatewayPolicy;
+
+public enum MonitorState { Stopped, Running, Fixing }
+
+public class RouteGuard
+{
+    private readonly AppConfig _config;
+    private System.Threading.Timer? _timer;
+    private int _mainIfIndex;
+    private string _mainGateway = "";
+    private volatile bool _fixing;
+    private DateTime _lastFixTime = DateTime.MinValue;
+    private string _routeTableCache = "";
+    private DateTime _routeTableCacheTime = DateTime.MinValue;
+    private string _lastNicLog = "";  // dedup: only log when NIC info changes
+
+    // /2 counter-routes that override VPN's /1 hijack
+    private static readonly string[] CounterRoutes = {
+        "0.0.0.0/2", "64.0.0.0/2", "128.0.0.0/2", "192.0.0.0/2"
+    };
+
+    public MonitorState State { get; private set; } = MonitorState.Stopped;
+    public event Action<string, LogLevel>? OnLog;
+    public event Action<MonitorState>? OnStateChanged;
+    public event Action? OnFixCompleted;
+
+    public RouteGuard(AppConfig config)
+    {
+        _config = config;
+    }
+
+    public void Start()
+    {
+        if (State == MonitorState.Running) return;
+
+        CacheMainNic();
+
+        State = MonitorState.Running;
+        OnStateChanged?.Invoke(State);
+        _timer = new System.Threading.Timer(_ => CheckLoop(), null,
+            TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(_config.CheckIntervalSeconds));
+        Log("Monitor started (v2.1: /2 counter-route strategy)", LogLevel.Info);
+    }
+
+    public void Stop()
+    {
+        _timer?.Dispose();
+        _timer = null;
+        State = MonitorState.Stopped;
+        OnStateChanged?.Invoke(State);
+        Log("Monitor stopped", LogLevel.Info);
+    }
+
+    private bool CacheMainNic()
+    {
+        try
+        {
+            var nics = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up &&
+                            n.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
+                            !IsVirtualAdapter(n))
+                .ToList();
+
+            foreach (var nic in nics)
+            {
+                var ipProps = nic.GetIPProperties();
+                var gateway = ipProps.GatewayAddresses.FirstOrDefault(g => g.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                if (gateway != null && !string.IsNullOrEmpty(gateway.Address.ToString()))
+                {
+                    _mainIfIndex = nic.GetIPProperties().GetIPv4Properties().Index;
+                    _mainGateway = gateway.Address.ToString();
+                    // Only log when NIC info changes
+                    var nicInfo = $"{nic.Name}|{_mainIfIndex}|{_mainGateway}";
+                    if (_lastNicLog != nicInfo)
+                    {
+                        _lastNicLog = nicInfo;
+                        Log($"Main NIC: {nic.Name} (if={_mainIfIndex}, gw={_mainGateway})", LogLevel.Info);
+                    }
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Detect main NIC error: {ex.Message}", LogLevel.Error);
+        }
+        return false;
+    }
+
+    private void CheckLoop()
+    {
+        if (_fixing) return;
+        DoCheck();
+    }
+
+    public void DoCheck()
+    {
+        if (_fixing) return;
+
+        try
+        {
+            CacheMainNic();
+
+            // Primary check: def1 hijack routes (/1 routes override default route)
+            bool hijacked = false;
+
+            if (RouteExists("0.0.0.0/1") || RouteExists("128.0.0.0/1"))
+            {
+                hijacked = true;
+                Log("Detected VPN def1 hijack route (0.0.0.0/1 or 128.0.0.0/1)", LogLevel.Info);
+            }
+
+            // Secondary check: TAP has default route with very low metric
+            foreach (var tap in GetManagedAdapters())
+            {
+                var metric = GetAdapterMetric(tap.IfIndex);
+                if (metric > 0 && metric < 10)
+                {
+                    hijacked = true;
+                    Log($"TAP adapter {tap.Name} has low metric default route (metric={metric})", LogLevel.Info);
+                }
+            }
+
+            if (hijacked) ApplyCounterRoutes();
+        }
+        catch (Exception ex)
+        {
+            Log($"Check error: {ex.Message}", LogLevel.Error);
+        }
+    }
+
+    /// <summary>
+    /// New strategy: Don't fight VPN. Let it push /1 routes.
+    /// Instead, add /2 counter-routes pointing to main NIC.
+    /// /2 is more specific than /1, so it wins without conflicting.
+    /// VPN won't detect or fight back because it doesn't push /2 routes.
+    /// </summary>
+    private void ApplyCounterRoutes()
+    {
+        _fixing = true;
+        State = MonitorState.Fixing;
+        OnStateChanged?.Invoke(State);
+
+        try
+        {
+            bool needFix = false;
+
+            // Step 1: Add /2 counter-routes for public traffic → main NIC
+            if (!string.IsNullOrEmpty(_mainGateway) && _mainIfIndex > 0)
+            {
+                foreach (var prefix in CounterRoutes)
+                {
+                    if (!CounterRouteExists(prefix, _mainIfIndex))
+                    {
+                        var result = RunRoute($"add {prefix} {_mainGateway} if {_mainIfIndex} metric {_config.MainMetric}");
+                        Log($"Counter-route ADD: {prefix} -> Main NIC (if={_mainIfIndex}, gw={_mainGateway}, metric={_config.MainMetric})", LogLevel.Info);
+                        needFix = true;
+                    }
+                    else
+                    {
+                        Log($"Counter-route OK: {prefix} already on if={_mainIfIndex}", LogLevel.Info);
+                    }
+                }
+            }
+            else
+            {
+                Log("Cannot add counter-routes: main NIC gateway not detected", LogLevel.Warning);
+            }
+
+            // Step 2: Ensure private networks → TAP (more specific than /2)
+            var managedTaps = GetManagedAdapters();
+            if (managedTaps.Count > 0)
+            {
+                int tapIf = managedTaps[0].IfIndex;
+                string? tapGw = GetTapGateway(tapIf);
+
+                if (!string.IsNullOrEmpty(tapGw))
+                {
+                    foreach (var net in _config.PrivateNets)
+                    {
+                        if (!PrivateRouteExists(net, tapIf))
+                        {
+                            RunRoute($"add {net} {tapGw} if {tapIf} metric 20");
+                            Log($"Private route ADD: {net} -> TAP (if={tapIf}, gw={tapGw})", LogLevel.Info);
+                            needFix = true;
+                        }
+                        else
+                        {
+                            Log($"Private route OK: {net} already on if={tapIf}", LogLevel.Info);
+                        }
+                    }
+                }
+                else
+                {
+                    Log($"TAP gateway not found for if={tapIf}, skipping private route setup", LogLevel.Warning);
+                }
+            }
+            else
+            {
+                Log("No managed TAP adapter found, skipping private route setup", LogLevel.Warning);
+            }
+
+            // Step 3: Apply custom route rules
+            if (!string.IsNullOrEmpty(_mainGateway) && managedTaps.Count > 0)
+            {
+                int tapIf = managedTaps[0].IfIndex;
+                string? tapGw = GetTapGateway(tapIf);
+
+                foreach (var rule in _config.CustomRoutes)
+                {
+                    if (rule.Value == "tap" && !string.IsNullOrEmpty(tapGw))
+                    {
+                        if (!PrivateRouteExists(rule.Key, tapIf))
+                        {
+                            RunRoute($"add {rule.Key} {tapGw} if {tapIf} metric 20");
+                            Log($"Custom route ADD: {rule.Key} -> TAP", LogLevel.Info);
+                            needFix = true;
+                        }
+                    }
+                    else if (rule.Value == "main")
+                    {
+                        if (!CounterRouteExists(rule.Key, _mainIfIndex))
+                        {
+                            RunRoute($"add {rule.Key} {_mainGateway} if {_mainIfIndex} metric {_config.MainMetric}");
+                            Log($"Custom route ADD: {rule.Key} -> Main NIC", LogLevel.Info);
+                            needFix = true;
+                        }
+                    }
+                }
+            }
+
+            if (needFix)
+            {
+                _config.TotalFixes++;
+                _config.LastFixTime = DateTime.Now;
+                _config.Save();
+                Log($"Counter-routes applied (total fixes: {_config.TotalFixes})", LogLevel.Info);
+                _lastFixTime = DateTime.Now;
+
+                OnFixCompleted?.Invoke();
+
+                if (_config.BarkEnabled && !string.IsNullOrEmpty(_config.BarkServer))
+                {
+                    _ = SendBarkNotification();
+                }
+            }
+            else
+            {
+                Log("No fix needed — all routes already in place", LogLevel.Info);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Counter-route error: {ex.Message}", LogLevel.Error);
+        }
+        finally
+        {
+            _fixing = false;
+            State = MonitorState.Running;
+            OnStateChanged?.Invoke(State);
+        }
+    }
+
+    // --- Helper methods ---
+
+    private static bool IsVirtualAdapter(NetworkInterface nic)
+    {
+        var desc = nic.Description;
+        string[] keywords = { "TAP", "VPN", "WireGuard", "Tunnel", "Virtual", "Hyper-V", "EricVPN" };
+        return keywords.Any(k => desc.Contains(k, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private List<TapAdapter> GetManagedAdapters()
+    {
+        string[] managedKeywords = { "TAP", "VPN", "Virtual", "Hyper-V", "EricVPN" };
+        string[] ignoreKeywords = { "WireGuard" };
+
+        return NetworkInterface.GetAllNetworkInterfaces()
+            .Where(n => n.OperationalStatus == OperationalStatus.Up)
+            .Where(n => managedKeywords.Any(k => n.Description.Contains(k, StringComparison.OrdinalIgnoreCase)))
+            .Where(n => !ignoreKeywords.Any(k => n.Description.Contains(k, StringComparison.OrdinalIgnoreCase)))
+            .Select(n => new TapAdapter
+            {
+                Name = n.Name,
+                IfIndex = n.GetIPProperties().GetIPv4Properties().Index,
+                Description = n.Description
+            })
+            .ToList();
+    }
+
+    // --- Route table parsing helpers ---
+
+    /// <summary>
+    /// Get cached route table output (cache for 2 seconds to avoid spamming route.exe)
+    /// </summary>
+    private string GetRouteTable()
+    {
+        if ((DateTime.Now - _routeTableCacheTime).TotalSeconds < 2 && !string.IsNullOrEmpty(_routeTableCache))
+            return _routeTableCache;
+        _routeTableCache = RunRoute("print -4");
+        _routeTableCacheTime = DateTime.Now;
+        return _routeTableCache;
+    }
+
+    /// <summary>
+    /// Map ifIndex to the interface's IPv4 address (used for matching route print output,
+    /// since route print shows interface IP, not ifIndex).
+    /// </summary>
+    private string? GetInterfaceIp(int ifIndex)
+    {
+        try
+        {
+            var nic = NetworkInterface.GetAllNetworkInterfaces()
+                .FirstOrDefault(n => n.GetIPProperties().GetIPv4Properties().Index == ifIndex);
+            if (nic == null) return null;
+            var ip = nic.GetIPProperties().UnicastAddresses
+                .FirstOrDefault(a => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+            return ip?.Address.ToString();
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Convert CIDR prefix (e.g. "0.0.0.0/1") to Windows route print format:
+    /// ("0.0.0.0", "128.0.0.0") — Network Destination and Netmask.
+    /// </summary>
+    private static (string dest, string mask) CidrToRoutePrint(string cidr)
+    {
+        var parts = cidr.Split('/');
+        if (parts.Length != 2 || !int.TryParse(parts[1], out int prefixLen) || prefixLen < 0 || prefixLen > 32)
+            return (parts[0], "0.0.0.0"); // fallback
+
+        // Build mask in network byte order (big-endian) to avoid IPAddress(uint) endianness issues
+        uint maskVal = prefixLen == 0 ? 0 : 0xFFFFFFFFu << (32 - prefixLen);
+        byte[] maskBytes = new byte[4];
+        maskBytes[0] = (byte)((maskVal >> 24) & 0xFF);
+        maskBytes[1] = (byte)((maskVal >> 16) & 0xFF);
+        maskBytes[2] = (byte)((maskVal >> 8) & 0xFF);
+        maskBytes[3] = (byte)(maskVal & 0xFF);
+        var maskAddr = new IPAddress(maskBytes);
+        // Network destination = IP AND mask (both in network byte order)
+        var ipBytes = IPAddress.Parse(parts[0]).GetAddressBytes();
+        var destBytes = new byte[4];
+        for (int i = 0; i < 4; i++) destBytes[i] = (byte)(ipBytes[i] & maskBytes[i]);
+        return (new IPAddress(destBytes).ToString(), maskAddr.ToString());
+    }
+
+    /// <summary>
+    /// Check if a CIDR route exists in route table (any interface).
+    /// Matches against Windows route print format: Dest  Mask  Gateway  InterfaceIP  Metric
+    /// </summary>
+    private bool RouteExists(string cidr)
+    {
+        try
+        {
+            var output = GetRouteTable();
+            var (dest, mask) = CidrToRoutePrint(cidr);
+            var lines = output.Split('\n');
+            return lines.Any(l =>
+            {
+                var parts = l.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                return parts.Length >= 5 && parts[0] == dest && parts[1] == mask;
+            });
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Check if a counter-route (CIDR → specific ifIndex) exists in route table.
+    /// Uses interface IP mapping since route print shows IP not ifIndex.
+    /// </summary>
+    private bool CounterRouteExists(string cidr, int ifIndex)
+    {
+        return RouteExistsOnInterface(cidr, ifIndex);
+    }
+
+    /// <summary>
+    /// Check if a private network route (CIDR → TAP ifIndex) exists in route table.
+    /// </summary>
+    private bool PrivateRouteExists(string cidr, int ifIndex)
+    {
+        return RouteExistsOnInterface(cidr, ifIndex);
+    }
+
+    /// <summary>
+    /// Check if a CIDR route exists on a specific interface (by ifIndex).
+    /// Resolves ifIndex to interface IP for route print matching.
+    /// </summary>
+    private bool RouteExistsOnInterface(string cidr, int ifIndex)
+    {
+        try
+        {
+            var output = GetRouteTable();
+            var (dest, mask) = CidrToRoutePrint(cidr);
+            var ifIp = GetInterfaceIp(ifIndex);
+            var lines = output.Split('\n');
+            return lines.Any(l =>
+            {
+                var parts = l.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 5 || parts[0] != dest || parts[1] != mask)
+                    return false;
+                // Match by interface IP if available, otherwise match by gateway
+                if (!string.IsNullOrEmpty(ifIp))
+                    return parts[3] == ifIp;
+                return true; // If we can't resolve IP, just match dest+mask
+            });
+        }
+        catch { return false; }
+    }
+
+    private string? GetTapGateway(int ifIndex)
+    {
+        try
+        {
+            var ifIp = GetInterfaceIp(ifIndex);
+            var output = GetRouteTable();
+            var lines = output.Split('\n');
+            foreach (var line in lines)
+            {
+                var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 5) continue;
+                // Match lines on this interface (by interface IP column)
+                if (!string.IsNullOrEmpty(ifIp) && parts[3] != ifIp) continue;
+                var gw = parts[2];
+                if (gw != "On-link" && System.Net.IPAddress.TryParse(gw, out var ip) && !ip.Equals(System.Net.IPAddress.Any))
+                    return gw;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private int GetAdapterMetric(int ifIndex)
+    {
+        try
+        {
+            var ifIp = GetInterfaceIp(ifIndex);
+            var output = GetRouteTable();
+            var lines = output.Split('\n');
+            foreach (var line in lines)
+            {
+                var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 5) continue;
+                // Look for default route (0.0.0.0/0) on this interface
+                if (parts[0] == "0.0.0.0" && parts[1] == "0.0.0.0")
+                {
+                    if (!string.IsNullOrEmpty(ifIp) && parts[3] != ifIp) continue;
+                    if (int.TryParse(parts[4], out var m))
+                        return m;
+                }
+            }
+        }
+        catch { }
+        return -1;
+    }
+
+    private string RunRoute(string args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "route.exe",
+                Arguments = args,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null) return "";
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(5000);
+            return output;
+        }
+        catch { return ""; }
+    }
+
+    private async Task SendBarkNotification()
+    {
+        try
+        {
+            var server = _config.BarkServer.TrimEnd('/');
+            var key = _config.BarkDeviceKey;
+            var title = Uri.EscapeDataString(_config.BarkTitle);
+            var body = Uri.EscapeDataString($"Route fix #{_config.TotalFixes} at {DateTime.Now:HH:mm:ss}");
+            var url = $"{server}/{key}/{title}/{body}";
+            if (!string.IsNullOrEmpty(_config.BarkSound))
+                url += $"?sound={_config.BarkSound}";
+
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            await http.GetAsync(url);
+            Log("Bark notification sent", LogLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            Log($"Bark send error: {ex.Message}", LogLevel.Warning);
+        }
+    }
+
+    private void Log(string message, LogLevel level)
+    {
+        OnLog?.Invoke(message, level);
+    }
+}
+
+public class TapAdapter
+{
+    public string Name { get; set; } = "";
+    public int IfIndex { get; set; }
+    public string Description { get; set; } = "";
+}
+
+public enum LogLevel { Info, Warning, Error }
