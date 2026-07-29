@@ -1,0 +1,46 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download LLVM-MinGW
+        shell: pwsh
+        run: |
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-x86_64.zip"
+          Invoke-WebRequest -Uri $url -OutFile llvm-mingw.zip
+          Expand-Archive llvm-mingw.zip -DestinationPath C:\
+          $dir = Get-ChildItem C:\llvm-mingw-* | Select-Object -First 1
+          Rename-Item $dir.FullName "C:\llvm-mingw"
+          echo "C:\llvm-mingw\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Build
+        shell: pwsh
+        run: |
+          mingw32-make
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: GatewayPolicy ${{ steps.version.outputs.VERSION }}
+          body: |
+            C++ Win32 standalone build - no .NET runtime required.
+            
+            Single exe, ~1.7MB, statically linked.
+          files: GatewayPolicy.exe

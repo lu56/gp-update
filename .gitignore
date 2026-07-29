@@ -1,0 +1,11 @@
+build/
+*.exe
+*.o
+*.res
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+_temp/
