@@ -9,7 +9,7 @@ public class AppConfig
     public const string DefaultAuthServer = "https://pve.lu56.top:12233";
 
     // App version — hardcoded, never loaded from config.json
-    private const string CompiledVersion = "5.0.3";
+    private const string CompiledVersion = "5.0.4";
     [JsonIgnore]
     public string AppVersion => CompiledVersion;
 

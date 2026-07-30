@@ -125,11 +125,11 @@ public class MainForm : Form
     private void InitializeForm()
     {
         Text = "GatewayPolicy";
-        Size = new Size(600, 520);
+        Size = new Size(600, 580);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
-        MinimumSize = new Size(500, 420);
+        MinimumSize = new Size(500, 480);
         Font = new Font("Microsoft YaHei UI", 9F);
 
         // Set window icon from embedded app.ico
@@ -193,7 +193,7 @@ public class MainForm : Form
     {
         var tab = new TabPage("设置");
         var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
-        var panel = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 30, Padding = new Padding(10), Width = 540 };
+        var panel = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 30, Padding = new Padding(10), Width = 540, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
