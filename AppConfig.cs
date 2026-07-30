@@ -8,8 +8,10 @@ public class AppConfig
     // Hardcoded auth server — cannot be bypassed by editing config.json
     public const string DefaultAuthServer = "https://pve.lu56.top:12233";
 
-    // App version (must match csproj Version)
-    public string AppVersion { get; set; } = "5.0.2";
+    // App version — hardcoded, never loaded from config.json
+    private const string CompiledVersion = "5.0.3";
+    [JsonIgnore]
+    public string AppVersion => CompiledVersion;
 
     // Monitor
     public int CheckIntervalSeconds { get; set; } = 4;

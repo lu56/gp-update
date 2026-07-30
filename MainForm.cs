@@ -41,8 +41,6 @@ public class MainForm : Form
     private CheckBox _chkBark = null!;
     private DataGridView _dgCustomRoutes = null!;
     private ListBox _lbPrivateNets = null!;
-    private TextBox _txtBarkTitle = null!;
-    private TextBox _txtBarkSound = null!;
     private CheckBox _chkAutoUpdate = null!;
     private TextBox _txtUpdateRepo = null!;
 
@@ -290,14 +288,6 @@ public class MainForm : Form
         _txtBarkKey = new TextBox { Text = _config.BarkDeviceKey, Dock = DockStyle.Fill, PlaceholderText = "你的 Bark deviceKey" };
         panel.Controls.Add(_txtBarkKey, 1, row); row++;
 
-        panel.Controls.Add(CreateFieldLabel("推送标题:"), 0, row);
-        _txtBarkTitle = new TextBox { Text = _config.BarkTitle, Dock = DockStyle.Fill, PlaceholderText = "GatewayPolicy" };
-        panel.Controls.Add(_txtBarkTitle, 1, row); row++;
-
-        panel.Controls.Add(CreateFieldLabel("推送铃声:"), 0, row);
-        _txtBarkSound = new TextBox { Text = _config.BarkSound, Dock = DockStyle.Fill, PlaceholderText = "留空使用默认铃声" };
-        panel.Controls.Add(_txtBarkSound, 1, row); row++;
-
         // Update
         panel.Controls.Add(CreateSectionLabel("自动更新"), 0, row); panel.SetColumnSpan(panel.Controls[panel.Controls.Count - 1], 2); row++;
 
@@ -447,8 +437,6 @@ public class MainForm : Form
         _config.BarkEnabled = _chkBark.Checked;
         _config.BarkServer = _txtBarkServer.Text.Trim();
         _config.BarkDeviceKey = _txtBarkKey.Text.Trim();
-        _config.BarkTitle = _txtBarkTitle.Text.Trim();
-        _config.BarkSound = _txtBarkSound.Text.Trim();
         _config.AutoUpdateCheck = _chkAutoUpdate.Checked;
         _config.UpdateRepo = _txtUpdateRepo.Text.Trim();
 
