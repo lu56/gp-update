@@ -75,7 +75,7 @@ public static class Logger
             foreach (var file in logFiles)
             {
                 var content = File.ReadAllText(file);
-                var fileLines = content.Split(new[] { Environment.NewLine }, StringSplitOptions.None)
+                var fileLines = content.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None)
                     .Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
 
                 foreach (var line in fileLines.Reverse<string>())

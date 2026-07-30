@@ -124,21 +124,25 @@ public class RouteGuard
 
             foreach (var nic in nics)
             {
-                var ipProps = nic.GetIPProperties();
-                var gateway = ipProps.GatewayAddresses.FirstOrDefault(g => g.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
-                if (gateway != null && !string.IsNullOrEmpty(gateway.Address.ToString()))
+                try
                 {
-                    _mainIfIndex = nic.GetIPProperties().GetIPv4Properties().Index;
-                    _mainGateway = gateway.Address.ToString();
-                    // Only log when NIC info changes
-                    var nicInfo = $"{nic.Name}|{_mainIfIndex}|{_mainGateway}";
+                    var ipProps = nic.GetIPProperties();
+                    var gateway = ipProps.GatewayAddresses.FirstOrDefault(g => g.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                    if (gateway != null && !string.IsNullOrEmpty(gateway.Address.ToString()))
+                    {
+                        _mainIfIndex = nic.GetIPProperties().GetIPv4Properties().Index;
+                        _mainGateway = gateway.Address.ToString();
+                        // Only log when NIC info changes
+                        var nicInfo = $"{nic.Name}|{_mainIfIndex}|{_mainGateway}";
                     if (_lastNicLog != nicInfo)
                     {
                         _lastNicLog = nicInfo;
                         Log($"Main NIC: {nic.Name} (if={_mainIfIndex}, gw={_mainGateway})", LogLevel.Info);
                     }
                     return true;
+                    }
                 }
+                catch { /* adapter without IPv4 — skip */ }
             }
         }
         catch (Exception ex)
@@ -205,7 +209,7 @@ public class RouteGuard
         }
         catch (Exception ex)
         {
-            Log($"Check error: {ex.Message}", LogLevel.Error);
+            Log($"Check error: {ex.Message} [{ex.GetType().Name} @ {ex.StackTrace?.Split('\n')[0]?.Trim()}]", LogLevel.Error);
         }
     }
 
@@ -352,17 +356,24 @@ public class RouteGuard
         string[] managedKeywords = { "TAP", "VPN", "Virtual", "Hyper-V", "EricVPN" };
         string[] ignoreKeywords = { "WireGuard" };
 
-        return NetworkInterface.GetAllNetworkInterfaces()
+        var result = new List<TapAdapter>();
+        foreach (var n in NetworkInterface.GetAllNetworkInterfaces()
             .Where(n => n.OperationalStatus == OperationalStatus.Up)
             .Where(n => managedKeywords.Any(k => n.Description.Contains(k, StringComparison.OrdinalIgnoreCase)))
-            .Where(n => !ignoreKeywords.Any(k => n.Description.Contains(k, StringComparison.OrdinalIgnoreCase)))
-            .Select(n => new TapAdapter
+            .Where(n => !ignoreKeywords.Any(k => n.Description.Contains(k, StringComparison.OrdinalIgnoreCase))))
+        {
+            try
             {
-                Name = n.Name,
-                IfIndex = n.GetIPProperties().GetIPv4Properties().Index,
-                Description = n.Description
-            })
-            .ToList();
+                result.Add(new TapAdapter
+                {
+                    Name = n.Name,
+                    IfIndex = n.GetIPProperties().GetIPv4Properties().Index,
+                    Description = n.Description
+                });
+            }
+            catch { /* adapter without IPv4 — skip */ }
+        }
+        return result;
     }
 
     // --- Route table parsing helpers ---
