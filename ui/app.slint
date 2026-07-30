@@ -1,0 +1,440 @@
+import { Button, LineEdit, CheckBox, SpinBox, ScrollView, TextEdit } from "std-widgets.slint";
+
+// Custom button with configurable color (std Button doesn't support background/color)
+component ColoredButton inherits Rectangle {
+    in property <color> btn-color: #4A6CF7;
+    in property <string> text: "";
+    in property <bool> enabled: true;
+    in property <length> min-w: 100px;
+    in property <length> btn-h: 36px;
+    callback clicked();
+
+    background: root.enabled ? root.btn-color : #bbbbbb;
+    border-radius: 4px;
+    height: root.btn-h;
+    min-width: root.min-w;
+    horizontal-stretch: 0;
+
+    Text {
+        text: root.text;
+        color: #ffffff;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-weight: 600;
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "GatewayPolicy";
+    preferred-width: 620px;
+    preferred-height: 520px;
+    background: #f5f5f5;
+
+    // Mode: "auth" or "main"
+    in-out property <string> mode: "auth";
+
+    // Auth properties
+    in-out property <string> device-id: "";
+    in-out property <string> auth-message: "";
+    in-out property <bool> auth-busy: false;
+
+    // Status properties
+    in-out property <string> state-text: "stopped";
+    in-out property <string> hijack-text: "-";
+    in-out property <string> main-nic: "-";
+    in-out property <string> tap-nic: "-";
+    in-out property <string> last-fix: "-";
+    in-out property <int> total-fixes: 0;
+    in-out property <bool> is-running: false;
+
+    // Log
+    in-out property <string> log-text: "";
+
+    // About
+    in-out property <string> version: "4.0.0";
+    in-out property <string> auth-info: "";
+    in-out property <string> update-message: "";
+
+    // Settings
+    in-out property <int> check-interval: 4;
+    in-out property <int> main-metric: 16;
+    in-out property <bool> auto-start: false;
+    in-out property <bool> minimize-tray: true;
+    in-out property <bool> show-notify: true;
+    in-out property <bool> bark-enabled: false;
+    in-out property <string> bark-server: "";
+    in-out property <string> bark-key: "";
+
+    // Callbacks
+    callback verify-auth();
+    callback copy-device-id();
+    callback toggle-monitor();
+    callback fix-now();
+    callback restore-network();
+    callback save-settings();
+    callback check-update();
+    callback clear-logs();
+    callback export-logs();
+
+    property <int> active-tab: 0;
+
+    // ============ AUTH VIEW ============
+    if mode == "auth" : Rectangle {
+        background: #f5f5f5;
+
+        VerticalLayout {
+            padding: 32px;
+            spacing: 14px;
+            alignment: center;
+
+            Text {
+                text: "Device Authorization";
+                font-size: 20px;
+                font-weight: 800;
+                horizontal-alignment: center;
+            }
+
+            Text {
+                text: "Send the device code below to admin,\nthen click Verify after authorization.";
+                horizontal-alignment: center;
+                color: #666;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                LineEdit {
+                    text: root.device-id;
+                    read-only: true;
+                    font-size: 11px;
+                }
+
+                Button {
+                    text: "Copy";
+                    width: 70px;
+                    clicked => { root.copy-device-id(); }
+                }
+            }
+
+            Text {
+                text: root.auth-message;
+                color: #1976D2;
+                horizontal-alignment: center;
+            }
+
+            ColoredButton {
+                text: root.auth-busy ? "Verifying..." : "Verify";
+                enabled: !root.auth-busy;
+                btn-color: #4A6CF7;
+                btn-h: 40px;
+                clicked => { root.verify-auth(); }
+            }
+        }
+    }
+
+    // ============ MAIN VIEW ============
+    if mode == "main" : VerticalLayout {
+        // Tab bar
+        HorizontalLayout {
+            spacing: 2px;
+            padding: 0px;
+
+            Rectangle {
+                background: root.active-tab == 0 ? #fff : #e0e0e0;
+                height: 34px;
+                Text {
+                    text: "Status";
+                    color: root.active-tab == 0 ? #1976D2 : #666;
+                    font-weight: root.active-tab == 0 ? 700 : 400;
+                }
+                TouchArea {
+                    clicked => { root.active-tab = 0; }
+                }
+            }
+            Rectangle {
+                background: root.active-tab == 1 ? #fff : #e0e0e0;
+                height: 34px;
+                Text {
+                    text: "Settings";
+                    color: root.active-tab == 1 ? #1976D2 : #666;
+                    font-weight: root.active-tab == 1 ? 700 : 400;
+                }
+                TouchArea {
+                    clicked => { root.active-tab = 1; }
+                }
+            }
+            Rectangle {
+                background: root.active-tab == 2 ? #fff : #e0e0e0;
+                height: 34px;
+                Text {
+                    text: "Log";
+                    color: root.active-tab == 2 ? #1976D2 : #666;
+                    font-weight: root.active-tab == 2 ? 700 : 400;
+                }
+                TouchArea {
+                    clicked => { root.active-tab = 2; }
+                }
+            }
+            Rectangle {
+                background: root.active-tab == 3 ? #fff : #e0e0e0;
+                height: 34px;
+                Text {
+                    text: "About";
+                    color: root.active-tab == 3 ? #1976D2 : #666;
+                    font-weight: root.active-tab == 3 ? 700 : 400;
+                }
+                TouchArea {
+                    clicked => { root.active-tab = 3; }
+                }
+            }
+        }
+
+        Rectangle {
+            background: #fff;
+            border-width: 0px;
+            border-radius: 0px;
+
+            // === STATUS TAB ===
+            if root.active-tab == 0 : VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Monitor State:"; width: 130px; color: #555; }
+                    Text {
+                        text: root.state-text == "running" ? "Running" : root.state-text == "fixing" ? "Fixing" : "Stopped";
+                        color: root.state-text == "running" ? #4CAF50 : root.state-text == "fixing" ? #FF9800 : #F44336;
+                        font-weight: 700;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Hijack Status:"; width: 130px; color: #555; }
+                    Text {
+                        text: root.is-running ? root.hijack-text : "-";
+                        color: root.hijack-text == "Hijacked" ? #F44336 : #4CAF50;
+                        font-weight: 600;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Main NIC:"; width: 130px; color: #555; }
+                    Text { text: root.main-nic; }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "TAP Adapter:"; width: 130px; color: #555; }
+                    Text { text: root.tap-nic; }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Last Fix:"; width: 130px; color: #555; }
+                    Text { text: root.last-fix; }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Total Fixes:"; width: 130px; color: #555; }
+                    Text { text: root.total-fixes; }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    padding: 8px;
+
+                    Button {
+                        text: root.is-running ? "Stop Monitor" : "Start Monitor";
+                        width: 130px;
+                        clicked => { root.toggle-monitor(); }
+                    }
+                    Button {
+                        text: "Fix Now";
+                        width: 100px;
+                        clicked => { root.fix-now(); }
+                    }
+                    ColoredButton {
+                        text: "Restore Network";
+                        btn-color: #ff7043;
+                        min-w: 130px;
+                        clicked => { root.restore-network(); }
+                    }
+                }
+            }
+
+            // === SETTINGS TAB ===
+            if root.active-tab == 1 : ScrollView {
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+
+                    Text { text: "Monitor"; font-size: 14px; font-weight: 700; color: #1565C0; }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: "Check Interval (s):"; width: 160px; }
+                        SpinBox {
+                            value: root.check-interval;
+                            minimum: 1;
+                            maximum: 60;
+                            width: 100px;
+                            edited(v) => { root.check-interval = v; }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: "Main NIC Metric:"; width: 160px; }
+                        SpinBox {
+                            value: root.main-metric;
+                            minimum: 1;
+                            maximum: 9999;
+                            width: 100px;
+                            edited(v) => { root.main-metric = v; }
+                        }
+                    }
+
+                    Text { text: "Behavior"; font-size: 14px; font-weight: 700; color: #1565C0; }
+
+                    CheckBox {
+                        text: "Auto Start";
+                        checked: root.auto-start;
+                        toggled => { root.auto-start = self.checked; }
+                    }
+                    CheckBox {
+                        text: "Minimize to Tray";
+                        checked: root.minimize-tray;
+                        toggled => { root.minimize-tray = self.checked; }
+                    }
+                    CheckBox {
+                        text: "Show Notification";
+                        checked: root.show-notify;
+                        toggled => { root.show-notify = self.checked; }
+                    }
+
+                    Text { text: "Bark Push"; font-size: 14px; font-weight: 700; color: #1565C0; }
+
+                    CheckBox {
+                        text: "Enable Bark Push";
+                        checked: root.bark-enabled;
+                        toggled => { root.bark-enabled = self.checked; }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: "Server:"; width: 160px; }
+                        LineEdit {
+                            text: root.bark-server;
+                            placeholder-text: "https://api.day.app";
+                            edited => { root.bark-server = self.text; }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: "Device Key:"; width: 160px; }
+                        LineEdit {
+                            text: root.bark-key;
+                            placeholder-text: "Your Bark deviceKey";
+                            edited => { root.bark-key = self.text; }
+                        }
+                    }
+
+                    ColoredButton {
+                        text: "Save Settings";
+                        btn-color: #4A6CF7;
+                        min-w: 130px;
+                        clicked => { root.save-settings(); }
+                    }
+                }
+            }
+
+            // === LOG TAB ===
+            if root.active-tab == 2 : VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+
+                ScrollView {
+                    VerticalLayout {
+                        padding: 8px;
+                        Text {
+                            text: root.log-text;
+                            color: #333;
+                            font-family: "Consolas";
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    padding: 4px;
+
+                    Button {
+                        text: "Export";
+                        width: 90px;
+                        clicked => { root.export-logs(); }
+                    }
+                    Button {
+                        text: "Clear";
+                        width: 90px;
+                        clicked => { root.clear-logs(); }
+                    }
+                }
+            }
+
+            // === ABOUT TAB ===
+            if root.active-tab == 3 : VerticalLayout {
+                padding: 24px;
+                spacing: 10px;
+
+                Text {
+                    text: "GatewayPolicy";
+                    font-size: 22px;
+                    font-weight: 800;
+                }
+                Text {
+                    text: "v" + root.version;
+                    font-size: 12px;
+                    color: #999;
+                }
+
+                Text {
+                    text: "Internet via local NIC, intranet via VPN.\nPrevents VPN route hijack from breaking internet.";
+                    color: #666;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: root.auth-info;
+                    font-family: "Consolas";
+                    font-size: 11px;
+                    color: #888;
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                Text {
+                    text: root.update-message;
+                    color: #1976D2;
+                }
+
+                Button {
+                    text: "Check Update";
+                    width: 140px;
+                    clicked => { root.check-update(); }
+                }
+            }
+        }
+    }
+}
