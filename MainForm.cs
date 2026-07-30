@@ -41,6 +41,10 @@ public class MainForm : Form
     private CheckBox _chkBark = null!;
     private DataGridView _dgCustomRoutes = null!;
     private ListBox _lbPrivateNets = null!;
+    private TextBox _txtBarkTitle = null!;
+    private TextBox _txtBarkSound = null!;
+    private CheckBox _chkAutoUpdate = null!;
+    private TextBox _txtUpdateRepo = null!;
 
     // Log tab
     private TextBox _txtLog = null!;
@@ -130,6 +134,9 @@ public class MainForm : Form
         MinimumSize = new Size(500, 420);
         Font = new Font("Microsoft YaHei UI", 9F);
 
+        // Set window icon from embedded app.ico
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+
         _tabControl = new TabControl { Dock = DockStyle.Fill, Padding = new Point(12, 6), Font = new Font("Microsoft YaHei UI", 9F) };
         Controls.Add(_tabControl);
     }
@@ -188,7 +195,7 @@ public class MainForm : Form
     {
         var tab = new TabPage("设置");
         var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
-        var panel = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 20, Padding = new Padding(10), Width = 540 };
+        var panel = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 30, Padding = new Padding(10), Width = 540 };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
@@ -282,6 +289,25 @@ public class MainForm : Form
         panel.Controls.Add(CreateFieldLabel("设备密钥:"), 0, row);
         _txtBarkKey = new TextBox { Text = _config.BarkDeviceKey, Dock = DockStyle.Fill, PlaceholderText = "你的 Bark deviceKey" };
         panel.Controls.Add(_txtBarkKey, 1, row); row++;
+
+        panel.Controls.Add(CreateFieldLabel("推送标题:"), 0, row);
+        _txtBarkTitle = new TextBox { Text = _config.BarkTitle, Dock = DockStyle.Fill, PlaceholderText = "GatewayPolicy" };
+        panel.Controls.Add(_txtBarkTitle, 1, row); row++;
+
+        panel.Controls.Add(CreateFieldLabel("推送铃声:"), 0, row);
+        _txtBarkSound = new TextBox { Text = _config.BarkSound, Dock = DockStyle.Fill, PlaceholderText = "留空使用默认铃声" };
+        panel.Controls.Add(_txtBarkSound, 1, row); row++;
+
+        // Update
+        panel.Controls.Add(CreateSectionLabel("自动更新"), 0, row); panel.SetColumnSpan(panel.Controls[panel.Controls.Count - 1], 2); row++;
+
+        _chkAutoUpdate = new CheckBox { Text = "启动时检查更新", Checked = _config.AutoUpdateCheck, Dock = DockStyle.Left };
+        panel.Controls.Add(CreateFieldLabel("自动检查:"), 0, row);
+        panel.Controls.Add(_chkAutoUpdate, 1, row); row++;
+
+        panel.Controls.Add(CreateFieldLabel("更新仓库:"), 0, row);
+        _txtUpdateRepo = new TextBox { Text = _config.UpdateRepo, Dock = DockStyle.Fill, PlaceholderText = "owner/repo (如 lu56/gp-update)" };
+        panel.Controls.Add(_txtUpdateRepo, 1, row); row++;
 
         // Save button
         row++;
@@ -421,6 +447,10 @@ public class MainForm : Form
         _config.BarkEnabled = _chkBark.Checked;
         _config.BarkServer = _txtBarkServer.Text.Trim();
         _config.BarkDeviceKey = _txtBarkKey.Text.Trim();
+        _config.BarkTitle = _txtBarkTitle.Text.Trim();
+        _config.BarkSound = _txtBarkSound.Text.Trim();
+        _config.AutoUpdateCheck = _chkAutoUpdate.Checked;
+        _config.UpdateRepo = _txtUpdateRepo.Text.Trim();
 
         // Private nets
         _config.PrivateNets.Clear();

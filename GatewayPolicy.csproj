@@ -7,7 +7,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>GatewayPolicy</AssemblyName>
-    <Version>5.0.1</Version>
+    <Version>5.0.2</Version>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

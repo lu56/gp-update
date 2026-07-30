@@ -9,7 +9,7 @@ public class AppConfig
     public const string DefaultAuthServer = "https://pve.lu56.top:12233";
 
     // App version (must match csproj Version)
-    public string AppVersion { get; set; } = "5.0.1";
+    public string AppVersion { get; set; } = "5.0.2";
 
     // Monitor
     public int CheckIntervalSeconds { get; set; } = 4;
