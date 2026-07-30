@@ -44,7 +44,7 @@ AppConfig AppConfig::load() {
     if (!root.isObject()) return cfg;
 
     // AppVersion is NOT loaded from config - always uses compiled version
-    cfg.appVersion = "2.0.0";
+    cfg.appVersion = "2.1.0";
     if (auto* v = root.find("CheckIntervalSeconds")) cfg.checkIntervalSeconds = v->asInt(4);
     if (auto* v = root.find("TapMetric")) cfg.tapMetric = v->asInt(50);
     if (auto* v = root.find("MainMetric")) cfg.mainMetric = v->asInt(16);

@@ -45,21 +45,15 @@ static std::string runCurlExe(const std::string& args, int timeoutMs, DWORD* exi
     std::string curlPath = findCurlExe();
     std::string cmd = curlPath + " " + args;
 
-    Logger::instance().write("[HTTP] runCurlExe cmd=" + cmd, LogLevel::Info);
-    Logger::instance().write("[HTTP] runCurlExe timeoutMs=" + std::to_string(timeoutMs), LogLevel::Info);
-
     bool ok = CreateProcessA(nullptr, const_cast<char*>(cmd.c_str()), nullptr, nullptr, TRUE,
                              CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
     if (!ok) {
         DWORD err = GetLastError();
-        Logger::instance().write("[HTTP] CreateProcessA FAILED, error=" + std::to_string(err), LogLevel::Error);
         if (exitCode) *exitCode = (DWORD)-1;
         CloseHandle(hStdoutR);
         CloseHandle(hStdoutW);
         return "ERROR: curl.exe not found (CreateProcess failed, err=" + std::to_string(err) + ")";
     }
-
-    Logger::instance().write("[HTTP] CreateProcessA OK, pid=" + std::to_string(pi.dwProcessId), LogLevel::Info);
 
     // Close child's write end in parent
     CloseHandle(hStdoutW);
@@ -68,7 +62,6 @@ static std::string runCurlExe(const std::string& args, int timeoutMs, DWORD* exi
     DWORD startTime = GetTickCount();
     char buf[8192];
     DWORD bytesRead = 0;
-    DWORD lastLogTime = startTime;
 
     while (true) {
         // Check if process has exited
@@ -84,8 +77,6 @@ static std::string runCurlExe(const std::string& args, int timeoutMs, DWORD* exi
                     break;
                 }
             }
-            Logger::instance().write("[HTTP] curl exited, code=" + std::to_string(exitCd) +
-                                     ", outputLen=" + std::to_string(result.size()), LogLevel::Info);
             if (exitCode) *exitCode = exitCd;
             break;
         }
@@ -102,20 +93,9 @@ static std::string runCurlExe(const std::string& args, int timeoutMs, DWORD* exi
             Sleep(50);
         }
 
-        // Periodic log every 2 seconds
-        DWORD now = GetTickCount();
-        if (now - lastLogTime > 2000) {
-            Logger::instance().write("[HTTP] still waiting for curl... elapsed=" +
-                                     std::to_string(now - startTime) + "ms, outputLen=" +
-                                     std::to_string(result.size()), LogLevel::Info);
-            lastLogTime = now;
-        }
-
         // Check timeout
         DWORD elapsed = GetTickCount() - startTime;
         if (elapsed > (DWORD)timeoutMs) {
-            Logger::instance().write("[HTTP] TIMEOUT after " + std::to_string(elapsed) +
-                                     "ms, killing curl", LogLevel::Warning);
             TerminateProcess(pi.hProcess, 1);
             if (exitCode) *exitCode = 1;
             result = "ERROR: curl timeout";
@@ -189,8 +169,6 @@ HttpResponse httpPost(const std::string& url, const std::string& jsonBody, int t
         return resp;
     }
 
-    Logger::instance().write("[HTTP] httpPost: url=" + url + " bodyLen=" + std::to_string(jsonBody.size()), LogLevel::Info);
-
     // Use -d @file to read body from file, -w for status code
     // Note: % not %% — CreateProcessA passes the string as-is, no escaping needed
     std::string args = "-k -s -m " + std::to_string(timeoutSec) +
@@ -206,12 +184,8 @@ HttpResponse httpPost(const std::string& url, const std::string& jsonBody, int t
     // Clean up temp file
     DeleteFileA(tempBody.c_str());
 
-    Logger::instance().write("[HTTP] httpPost: runCurlExe returned exitCode=" + std::to_string(exitCode) +
-                             " outputLen=" + std::to_string(output.size()), LogLevel::Info);
-
     if (output.rfind("ERROR:", 0) == 0) {
         resp.error = output;
-        Logger::instance().write("[HTTP] httpPost: error: " + output, LogLevel::Warning);
         return resp;
     }
 

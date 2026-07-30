@@ -21,14 +21,15 @@ namespace gp {
 // Control IDs
 enum ControlIds {
     IDC_TAB = 1000,
-    IDC_BTN_TOGGLE, IDC_BTN_FIX_NOW,
+    IDC_BTN_TOGGLE, IDC_BTN_FIX_NOW, IDC_BTN_RESTORE,
     IDC_LBL_STATE, IDC_LBL_MAINNIC, IDC_LBL_TAPNIC, IDC_LBL_LASTFIX, IDC_LBL_TOTALFIXES,
+    IDC_LBL_HIJACK,
     IDC_NUM_INTERVAL, IDC_NUM_TAPMETRIC, IDC_NUM_MAINMETRIC,
     IDC_CHK_AUTOSTART, IDC_CHK_MINIMIZE, IDC_CHK_NOTIFY,
     IDC_CHK_BARK, IDC_TXT_BARKSERVER, IDC_TXT_BARKKEY,
     IDC_LB_PRIVNETS, IDC_BTN_ADDNET, IDC_BTN_DELNET,
     IDC_BTN_SAVE,
-    IDC_TXT_LOG, IDC_BTN_EXPORTLOG, IDC_BTN_CLEARLOG,
+    IDC_TXT_LOG, IDC_BTN_EXPORTLOG, IDC_BTN_CLEARLOG, IDC_BTN_COPYLOG,
     IDC_BTN_CHECKUPDATE,
 };
 
@@ -67,7 +68,8 @@ private:
 
     // Status tab controls
     HWND hLblState, hLblMainNic, hLblTapNic, hLblLastFix, hLblTotalFixes;
-    HWND hBtnToggle, hBtnFixNow;
+    HWND hLblHijack;
+    HWND hBtnToggle, hBtnFixNow, hBtnRestore;
 
     // Settings tab controls
     HWND hNumInterval, hNumTapMetric, hNumMainMetric;
@@ -76,7 +78,7 @@ private:
     HWND hLbPrivNets, hBtnAddNet, hBtnDelNet, hBtnSave;
 
     // Log tab controls
-    HWND hTxtLog, hBtnExportLog, hBtnClearLog;
+    HWND hTxtLog, hBtnExportLog, hBtnClearLog, hBtnCopyLog;
 
     // About tab controls
     HWND hBtnCheckUpdate;
@@ -112,11 +114,13 @@ private:
     // Event handlers
     void onToggleMonitor();
     void onFixNow();
+    void onRestoreNetwork();
     void onSaveSettings();
     void onAddPrivateNet();
     void onRemovePrivateNet();
     void onExportLog();
     void onClearLog();
+    void onCopyLog();
     void onCheckUpdate();
     void onFixCompleted();
     void onRevalidate();

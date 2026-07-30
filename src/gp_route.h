@@ -25,7 +25,11 @@ public:
     void stop();
     void doCheckNow();
 
+    // Restore network: remove all /2 counter-routes
+    void restoreNetwork();
+
     MonitorState getState() const { return state; }
+    bool isCurrentlyHijacked() const { return wasHijacked; }
 
     // Callbacks (called from background thread)
     std::function<void(const std::string&, LogLevel)> onLog;

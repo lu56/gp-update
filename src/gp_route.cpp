@@ -38,7 +38,7 @@ void RouteEngine::start() {
     running = true;
     cacheMainNic();
     setState(MonitorState::Running);
-    log("Monitor started (v2.0: /2 counter-route strategy, C++ edition)", LogLevel::Info);
+    log("Monitor started", LogLevel::Info);
 
     worker = std::thread([this]() { workerLoop(); });
 }
@@ -54,6 +54,20 @@ void RouteEngine::stop() {
 void RouteEngine::doCheckNow() {
     if (fixing) return;
     doCheck();
+}
+
+void RouteEngine::restoreNetwork() {
+    log("Restoring network: removing all counter-routes", LogLevel::Info);
+    for (auto& cidr : counterRoutes) {
+        std::string dest, mask;
+        cidrToRoutePrint(cidr, dest, mask);
+        std::string cmd = "delete " + dest + " mask " + mask;
+        runRoute(cmd);
+        log("Removed: " + cidr, LogLevel::Info);
+    }
+    wasHijacked = false;
+    steadyState = false;
+    log("Network restored - all counter-routes removed", LogLevel::Info);
 }
 
 void RouteEngine::workerLoop() {

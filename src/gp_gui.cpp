@@ -7,6 +7,7 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <windowsx.h>
 #include <sstream>
 #include <fstream>
 #include <algorithm>
@@ -122,6 +123,19 @@ static LRESULT CALLBACK pageProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
                     SetTextColor(hdc, RGB(200, 0, 0));    // red
                     break;
             }
+        } else if (ctrlId == IDC_LBL_HIJACK && self) {
+            // Color hijack status based on label text
+            wchar_t buf[32] = {0};
+            GetWindowTextW(hwndCtrl, buf, 31);
+            if (wcscmp(buf, L"-") == 0) {
+                SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
+            } else if (self->currentVisualState == MonitorState::Stopped) {
+                SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
+            } else {
+                // Check if hijacked by looking at text
+                bool hijacked = (wcscmp(buf, L"\x5DF2\x52AB\x6301") == 0); // 已劫持
+                SetTextColor(hdc, hijacked ? RGB(200, 0, 0) : RGB(0, 150, 0));
+            }
         } else {
             SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
         }
@@ -139,42 +153,53 @@ static LRESULT CALLBACK pageProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 // ===== Icon creation =====
 
 HICON GuiApp::createColorIcon(COLORREF color) {
-    // Create a 32x32 icon with a colored circle on dark background
+    // Create a 32x32 icon with a colored circle and transparent background
     const int SZ = 32;
 
     HDC hdcScreen = GetDC(nullptr);
     if (!hdcScreen) return nullptr;
 
-    // Color bitmap (32x32)
+    // Color bitmap: draw colored circle
     HDC hdcColor = CreateCompatibleDC(hdcScreen);
     HBITMAP hBmpColor = CreateCompatibleBitmap(hdcScreen, SZ, SZ);
     HBITMAP hOldColor = (HBITMAP)SelectObject(hdcColor, hBmpColor);
 
-    // Dark rounded background
+    // Fill with black (will be masked out anyway)
     RECT rc = {0, 0, SZ, SZ};
-    HBRUSH hBg = CreateSolidBrush(RGB(28, 28, 30));
+    HBRUSH hBg = CreateSolidBrush(RGB(0, 0, 0));
     FillRect(hdcColor, &rc, hBg);
     DeleteObject(hBg);
 
-    // Filled circle with color + white ring
+    // Draw filled circle
     HBRUSH hCircle = CreateSolidBrush(color);
-    HPEN hRing = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    HPEN hPen = CreatePen(PS_SOLID, 1, color);
     HBRUSH hOldBr = (HBRUSH)SelectObject(hdcColor, hCircle);
-    HPEN hOldPen = (HPEN)SelectObject(hdcColor, hRing);
-    Ellipse(hdcColor, 4, 4, SZ - 4, SZ - 4);
+    HPEN hOldPen = (HPEN)SelectObject(hdcColor, hPen);
+    Ellipse(hdcColor, 3, 3, SZ - 3, SZ - 3);
     SelectObject(hdcColor, hOldBr);
     SelectObject(hdcColor, hOldPen);
     DeleteObject(hCircle);
-    DeleteObject(hRing);
+    DeleteObject(hPen);
 
     SelectObject(hdcColor, hOldColor);
     DeleteDC(hdcColor);
 
-    // Mask bitmap — all black (fully opaque)
+    // Mask bitmap: white (transparent) outside circle, black (opaque) inside
     HDC hdcMask = CreateCompatibleDC(hdcScreen);
     HBITMAP hBmpMask = CreateBitmap(SZ, SZ, 1, 1, nullptr);
     HBITMAP hOldMask = (HBITMAP)SelectObject(hdcMask, hBmpMask);
-    PatBlt(hdcMask, 0, 0, SZ, SZ, BLACKNESS);
+    // Start with all white (transparent)
+    PatBlt(hdcMask, 0, 0, SZ, SZ, WHITENESS);
+    // Draw black circle (opaque) — must match the color bitmap circle exactly
+    HBRUSH hMaskBr = CreateSolidBrush(RGB(0, 0, 0));
+    HPEN hMaskPen = CreatePen(PS_SOLID, 1, RGB(0, 0, 0));
+    HBRUSH hOldMaskBr = (HBRUSH)SelectObject(hdcMask, hMaskBr);
+    HPEN hOldMaskPen = (HPEN)SelectObject(hdcMask, hMaskPen);
+    Ellipse(hdcMask, 3, 3, SZ - 3, SZ - 3);
+    SelectObject(hdcMask, hOldMaskBr);
+    SelectObject(hdcMask, hOldMaskPen);
+    DeleteObject(hMaskBr);
+    DeleteObject(hMaskPen);
     SelectObject(hdcMask, hOldMask);
     DeleteDC(hdcMask);
 
@@ -235,8 +260,8 @@ void GuiApp::setupCallbacks() {
 bool GuiApp::createMainWindow() {
     static const wchar_t* className = L"GatewayPolicyMainWnd";
 
-    // Create global UI font (Microsoft YaHei UI, ~10pt)
-    hGlobalFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    // Create global UI font (Microsoft YaHei UI, ~11pt, medium weight for clarity)
+    hGlobalFont = CreateFontW(-15, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Microsoft YaHei UI");
 
@@ -327,6 +352,10 @@ void GuiApp::buildStatusTab(HWND parent) {
     hLblState = createLabel(parent, L"\x5DF2\x505C\x6B62", x + labelW + 10, y, valW, rowH, SS_LEFT, hInst, IDC_LBL_STATE);
     y += rowH;
 
+    createLabel(parent, L"\x52AB\x6301\x72B6\x6001:", x, y, labelW, rowH, SS_RIGHT, hInst); // 劫持状态:
+    hLblHijack = createLabel(parent, L"\x6B63\x5E38", x + labelW + 10, y, valW, rowH, SS_LEFT, hInst, IDC_LBL_HIJACK); // 正常
+    y += rowH;
+
     createLabel(parent, L"\x4E3B\x7F51\x5361:", x, y, labelW, rowH, SS_RIGHT, hInst); // 主网卡:
     hLblMainNic = createLabel(parent, L"-", x + labelW + 10, y, valW, rowH, SS_LEFT, hInst, IDC_LBL_MAINNIC);
     y += rowH;
@@ -343,13 +372,16 @@ void GuiApp::buildStatusTab(HWND parent) {
     hLblTotalFixes = createLabel(parent, L"0", x + labelW + 10, y, valW, rowH, SS_LEFT, hInst, IDC_LBL_TOTALFIXES);
     y += rowH + 15;
 
-    // 监控状态 -> 状态 = \x72B6\x6001
+    // Buttons
     hBtnToggle = createButton(parent,
         L"\x542F\x52A8\x76D1\x63A7", // 启动监控
         x + labelW + 10, y, 130, 32, hInst, IDC_BTN_TOGGLE);
     hBtnFixNow = createButton(parent,
         L"\x7ACB\x5373\x4FEE\x590D", // 立即修复
         x + labelW + 150, y, 100, 32, hInst, IDC_BTN_FIX_NOW);
+    hBtnRestore = createButton(parent,
+        L"\x6062\x590D\x7F51\x7EDC", // 恢复网络
+        x + labelW + 260, y, 100, 32, hInst, IDC_BTN_RESTORE);
 }
 
 void GuiApp::buildSettingsTab(HWND parent) {
@@ -441,6 +473,9 @@ void GuiApp::buildLogTab(HWND parent) {
     hBtnClearLog = createButton(parent,
         L"\x6E05\x7A7A\x65E5\x5FD7", // 清空日志
         130, 415, 100, 28, hInst, IDC_BTN_CLEARLOG);
+    hBtnCopyLog = createButton(parent,
+        L"\x590D\x5236\x65E5\x5FD7", // 复制日志
+        240, 415, 100, 28, hInst, IDC_BTN_COPYLOG);
 }
 
 void GuiApp::buildAboutTab(HWND parent) {
@@ -505,8 +540,18 @@ void GuiApp::refreshStatus() {
             break;
     }
     SetWindowTextW(hLblState, stateText);
-    // Force redraw of status label so WM_CTLCOLORSTATIC applies new color
     InvalidateRect(hLblState, nullptr, TRUE);
+
+    // Hijack status
+    bool hijacked = engine.isCurrentlyHijacked();
+    if (state == MonitorState::Stopped) {
+        SetWindowTextW(hLblHijack, L"-");
+    } else if (hijacked) {
+        SetWindowTextW(hLblHijack, L"\x5DF2\x52AB\x6301"); // 已劫持
+    } else {
+        SetWindowTextW(hLblHijack, L"\x6B63\x5E38"); // 正常
+    }
+    InvalidateRect(hLblHijack, nullptr, TRUE);
 
     // NIC info
     std::wstring mainNic = engine.getMainNicName();
@@ -582,6 +627,15 @@ void GuiApp::onFixNow() {
     Logger::instance().write("Manual fix triggered", LogLevel::Info);
     engine.doCheckNow();
     refreshStatus();
+}
+
+void GuiApp::onRestoreNetwork() {
+    if (MessageBoxW(hMainWnd,
+        L"\x786E\x8BA4\x6062\x590D\x7F51\x7EDC\xFF1F\n\x5C06\x5220\x9664\x6240\x6709 /2 \x8DEF\x7531\x3002", // 确认恢复网络？将删除所有 /2 路由。
+        L"\x6062\x590D\x7F51\x7EDC", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+        engine.restoreNetwork();
+        refreshStatus();
+    }
 }
 
 void GuiApp::onSaveSettings() {
@@ -676,6 +730,33 @@ void GuiApp::onClearLog() {
         L"GatewayPolicy", MB_YESNO | MB_ICONQUESTION) == IDYES) {
         Logger::instance().clearLogs();
         SetWindowTextW(hTxtLog, L"");
+    }
+}
+
+void GuiApp::onCopyLog() {
+    // Get all text from the log control
+    int len = GetWindowTextLengthW(hTxtLog);
+    if (len <= 0) {
+        MessageBoxW(hMainWnd, L"\x65E5\x5FD7\x4E3A\x7A7A\x3002", L"GatewayPolicy", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    std::wstring text(len + 1, 0);
+    GetWindowTextW(hTxtLog, &text[0], len + 1);
+    text.resize(len);
+
+    if (OpenClipboard(hMainWnd)) {
+        EmptyClipboard();
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, (len + 1) * sizeof(wchar_t));
+        if (hMem) {
+            wchar_t* pMem = (wchar_t*)GlobalLock(hMem);
+            if (pMem) {
+                wcscpy_s(pMem, len + 1, text.c_str());
+                GlobalUnlock(hMem);
+                SetClipboardData(CF_UNICODETEXT, hMem);
+            }
+        }
+        CloseClipboard();
+        Logger::instance().write("Log copied to clipboard", LogLevel::Info);
     }
 }
 
@@ -790,11 +871,13 @@ LRESULT CALLBACK GuiApp::wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
             switch (id) {
                 case IDC_BTN_TOGGLE: self->onToggleMonitor(); break;
                 case IDC_BTN_FIX_NOW: self->onFixNow(); break;
+                case IDC_BTN_RESTORE: self->onRestoreNetwork(); break;
                 case IDC_BTN_SAVE: self->onSaveSettings(); break;
                 case IDC_BTN_ADDNET: self->onAddPrivateNet(); break;
                 case IDC_BTN_DELNET: self->onRemovePrivateNet(); break;
                 case IDC_BTN_EXPORTLOG: self->onExportLog(); break;
                 case IDC_BTN_CLEARLOG: self->onClearLog(); break;
+                case IDC_BTN_COPYLOG: self->onCopyLog(); break;
                 case IDC_BTN_CHECKUPDATE: self->onCheckUpdate(); break;
             }
             return 0;
@@ -880,6 +963,28 @@ LRESULT CALLBACK GuiApp::wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
         case WM_ENDSESSION:
             self->engine.stop();
             return 0;
+
+        case WM_CONTEXTMENU: {
+            // Right-click context menu for log text box
+            if ((HWND)wParam == self->hTxtLog) {
+                HMENU hMenu = CreatePopupMenu();
+                AppendMenuW(hMenu, MF_STRING, 1, L"\x590D\x5236\x9009\x4E2D\x5185\x5BB9"); // 复制选中内容
+                AppendMenuW(hMenu, MF_STRING, 2, L"\x5168\x9009"); // 全选
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                AppendMenuW(hMenu, MF_STRING, 3, L"\x590D\x5236\x5168\x90E8\x65E5\x5FD7"); // 复制全部日志
+                int sel = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_LEFTALIGN,
+                    GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), 0, hWnd, nullptr);
+                DestroyMenu(hMenu);
+                if (sel == 1) {
+                    SendMessageW(self->hTxtLog, WM_COPY, 0, 0);
+                } else if (sel == 2) {
+                    SendMessageW(self->hTxtLog, EM_SETSEL, 0, -1);
+                } else if (sel == 3) {
+                    self->onCopyLog();
+                }
+            }
+            return 0;
+        }
 
         case WM_DESTROY:
             self->engine.stop();
