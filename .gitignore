@@ -3,6 +3,9 @@ bin/
 obj/
 publish/
 publish-nosingle/
+publish-final/
+publish-standalone/
+publish-test/
 
 # IDE
 .vs/

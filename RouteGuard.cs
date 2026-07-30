@@ -26,9 +26,16 @@ public class RouteGuard
     };
 
     public MonitorState State { get; private set; } = MonitorState.Stopped;
+
+    /// <summary>
+    /// Current hijack status (true = VPN is hijacking routes).
+    /// </summary>
+    public bool IsHijacked => _wasHijacked;
+
     public event Action<string, LogLevel>? OnLog;
     public event Action<MonitorState>? OnStateChanged;
     public event Action? OnFixCompleted;
+    public event Action<bool>? OnHijackChanged;
 
     public RouteGuard(AppConfig config)
     {
@@ -37,7 +44,7 @@ public class RouteGuard
 
     public void Start()
     {
-        if (State == MonitorState.Running) return;
+        if (State != MonitorState.Stopped) return;  // Already running or fixing
 
         CacheMainNic();
 
@@ -52,9 +59,57 @@ public class RouteGuard
     {
         _timer?.Dispose();
         _timer = null;
+        _fixing = false;
         State = MonitorState.Stopped;
         OnStateChanged?.Invoke(State);
         Log("Monitor stopped", LogLevel.Info);
+    }
+
+    /// <summary>
+    /// Remove all /2 counter-routes and restore original networking.
+    /// Optionally stops monitoring first. Does NOT restart monitoring.
+    /// </summary>
+    public void RestoreNetwork()
+    {
+        // Stop monitoring to avoid re-adding routes during restoration
+        if (State != MonitorState.Stopped)
+        {
+            _timer?.Dispose();
+            _timer = null;
+            _fixing = false;
+            State = MonitorState.Stopped;
+            OnStateChanged?.Invoke(State);
+        }
+
+        int removed = 0;
+
+        // Remove /2 counter-routes
+        foreach (var prefix in CounterRoutes)
+        {
+            RunRoute($"delete {prefix}");
+            removed++;
+        }
+
+        // Also remove private routes to TAP
+        foreach (var net in _config.PrivateNets)
+        {
+            RunRoute($"delete {net}");
+            removed++;
+        }
+
+        // Remove custom routes
+        foreach (var rule in _config.CustomRoutes)
+        {
+            RunRoute($"delete {rule.Key}");
+            removed++;
+        }
+
+        _wasHijacked = false;
+        _steadyState = false;
+
+        Log($"Network restored — removed {removed} routes (counter-routes + private routes)", LogLevel.Info);
+        OnHijackChanged?.Invoke(false);
+        OnFixCompleted?.Invoke();
     }
 
     private bool CacheMainNic()
@@ -117,6 +172,7 @@ public class RouteGuard
                 {
                     Log("Detected VPN def1 hijack route (0.0.0.0/1 or 128.0.0.0/1)", LogLevel.Info);
                     _wasHijacked = true;
+                    OnHijackChanged?.Invoke(true);
                 }
             }
             else
@@ -126,6 +182,7 @@ public class RouteGuard
                     Log("VPN hijack cleared — no longer detected", LogLevel.Info);
                     _wasHijacked = false;
                     _steadyState = false;
+                    OnHijackChanged?.Invoke(false);
                 }
             }
 
@@ -271,8 +328,12 @@ public class RouteGuard
             if (_fixing)
             {
                 _fixing = false;
-                State = MonitorState.Running;
-                OnStateChanged?.Invoke(State);
+                // Only restore to Running if not stopped by user during fix
+                if (State == MonitorState.Fixing)
+                {
+                    State = MonitorState.Running;
+                    OnStateChanged?.Invoke(State);
+                }
             }
         }
     }

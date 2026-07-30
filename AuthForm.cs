@@ -96,18 +96,6 @@ public class AuthForm : Form
         idPanel.Controls.Add(_btnCopy);
         panel.Controls.Add(idPanel);
 
-        // Server URL display
-        var lblServer = new Label
-        {
-            Text = $"授权服务器: {_serverUrl}",
-            AutoSize = true,
-            Dock = DockStyle.Left,
-            ForeColor = Color.Gray,
-            Font = new Font("Microsoft YaHei UI", 8),
-            Margin = new Padding(0, 0, 0, 10)
-        };
-        panel.Controls.Add(lblServer);
-
         // Status
         _lblStatus = new Label
         {
@@ -170,7 +158,12 @@ public class AuthForm : Form
 
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            // Use HttpClientHandler that trusts self-signed certificates (for HTTPS reverse proxy)
+            using var http = new HttpClient(new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
+            });
+            http.Timeout = TimeSpan.FromSeconds(10);
             var body = JsonSerializer.Serialize(new { device_id = _deviceId });
             var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
             var resp = await http.PostAsync($"{_serverUrl}/api/auth/check", content);
@@ -185,7 +178,7 @@ public class AuthForm : Form
             {
                 var token = root.GetProperty("data").GetProperty("token").GetString() ?? "";
                 _config.AuthToken = token;
-                _config.AuthExpire = DateTime.Now.AddDays(7).ToString("yyyy-MM-dd HH:mm:ss");
+                _config.AuthExpire = DateTime.Now.AddDays(2).ToString("yyyy-MM-dd HH:mm:ss");
                 _config.Save();
 
                 _lblStatus.Text = "授权验证通过！";

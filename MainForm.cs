@@ -20,12 +20,14 @@ public class MainForm : Form
 
     // Status tab
     private Label _lblState = null!;
+    private Label _lblHijack = null!;
     private Label _lblMainNic = null!;
     private Label _lblTapNic = null!;
     private Label _lblLastFix = null!;
     private Label _lblTotalFixes = null!;
     private Button _btnToggle = null!;
     private Button _btnFixNow = null!;
+    private Button _btnRestore = null!;
 
     // Settings tab
     private NumericUpDown _numInterval = null!;
@@ -62,6 +64,7 @@ public class MainForm : Form
         _guard.OnLog += OnGuardLog;
         _guard.OnStateChanged += OnGuardStateChanged;
         _guard.OnFixCompleted += OnGuardFixCompleted;
+        _guard.OnHijackChanged += OnGuardHijackChanged;
 
         // Load current state
         RefreshStatus();
@@ -120,13 +123,14 @@ public class MainForm : Form
     private void InitializeForm()
     {
         Text = "GatewayPolicy";
-        Size = new Size(600, 500);
+        Size = new Size(600, 520);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
-        MinimumSize = new Size(500, 400);
+        MinimumSize = new Size(500, 420);
+        Font = new Font("Microsoft YaHei UI", 9F);
 
-        _tabControl = new TabControl { Dock = DockStyle.Fill, Padding = new Point(12, 6) };
+        _tabControl = new TabControl { Dock = DockStyle.Fill, Padding = new Point(12, 6), Font = new Font("Microsoft YaHei UI", 9F) };
         Controls.Add(_tabControl);
     }
 
@@ -135,11 +139,12 @@ public class MainForm : Form
     private void BuildStatusTab()
     {
         var tab = new TabPage("状态");
-        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 7, Padding = new Padding(10) };
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 8, Padding = new Padding(12) };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         _lblState = CreateValueLabel("已停止");
+        _lblHijack = CreateValueLabel("-");
         _lblMainNic = CreateValueLabel("-");
         _lblTapNic = CreateValueLabel("-");
         _lblLastFix = CreateValueLabel("-");
@@ -147,25 +152,30 @@ public class MainForm : Form
 
         panel.Controls.Add(CreateFieldLabel("监控状态:"), 0, 0);
         panel.Controls.Add(_lblState, 1, 0);
-        panel.Controls.Add(CreateFieldLabel("主网卡:"), 0, 1);
-        panel.Controls.Add(_lblMainNic, 1, 1);
-        panel.Controls.Add(CreateFieldLabel("TAP 适配器:"), 0, 2);
-        panel.Controls.Add(_lblTapNic, 1, 2);
-        panel.Controls.Add(CreateFieldLabel("上次修复:"), 0, 3);
-        panel.Controls.Add(_lblLastFix, 1, 3);
-        panel.Controls.Add(CreateFieldLabel("累计修复:"), 0, 4);
-        panel.Controls.Add(_lblTotalFixes, 1, 4);
+        panel.Controls.Add(CreateFieldLabel("劫持状态:"), 0, 1);
+        panel.Controls.Add(_lblHijack, 1, 1);
+        panel.Controls.Add(CreateFieldLabel("主网卡:"), 0, 2);
+        panel.Controls.Add(_lblMainNic, 1, 2);
+        panel.Controls.Add(CreateFieldLabel("TAP 适配器:"), 0, 3);
+        panel.Controls.Add(_lblTapNic, 1, 3);
+        panel.Controls.Add(CreateFieldLabel("上次修复:"), 0, 4);
+        panel.Controls.Add(_lblLastFix, 1, 4);
+        panel.Controls.Add(CreateFieldLabel("累计修复:"), 0, 5);
+        panel.Controls.Add(_lblTotalFixes, 1, 5);
 
-        var btnPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        _btnToggle = new Button { Text = "启动监控", Size = new Size(130, 32), Margin = new Padding(0, 10, 10, 0) };
+        var btnPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(0, 8, 0, 0) };
+        _btnToggle = new Button { Text = "启动监控", Size = new Size(120, 34), Margin = new Padding(0, 0, 8, 0) };
         _btnToggle.Click += (s, e) => ToggleMonitor();
-        _btnFixNow = new Button { Text = "立即修复", Size = new Size(100, 32), Margin = new Padding(0, 10, 0, 0) };
+        _btnFixNow = new Button { Text = "立即修复", Size = new Size(100, 34), Margin = new Padding(0, 0, 8, 0) };
         _btnFixNow.Click += (s, e) => FixNow();
+        _btnRestore = new Button { Text = "恢复网络", Size = new Size(100, 34), Margin = new Padding(0, 0, 0, 0) };
+        _btnRestore.Click += (s, e) => RestoreNetwork();
 
         btnPanel.Controls.Add(_btnToggle);
         btnPanel.Controls.Add(_btnFixNow);
+        btnPanel.Controls.Add(_btnRestore);
 
-        panel.Controls.Add(btnPanel, 0, 5);
+        panel.Controls.Add(btnPanel, 0, 6);
         panel.SetColumnSpan(btnPanel, 2);
 
         tab.Controls.Add(panel);
@@ -324,14 +334,27 @@ public class MainForm : Form
     private void BuildAboutTab()
     {
         var tab = new TabPage("关于");
-        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(20) };
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, Padding = new Padding(20) };
 
-        var title = new Label { Text = "GatewayPolicy", Font = new Font("Segoe UI", 18, FontStyle.Bold), AutoSize = true };
-        var ver = new Label { Text = $"v{_config.AppVersion}", Font = new Font("Segoe UI", 10), AutoSize = true, ForeColor = Color.Gray };
+        var title = new Label { Text = "GatewayPolicy", Font = new Font("Microsoft YaHei UI", 18, FontStyle.Bold), AutoSize = true };
+        var ver = new Label { Text = $"v{_config.AppVersion}", Font = new Font("Microsoft YaHei UI", 10), AutoSize = true, ForeColor = Color.Gray };
         var desc = new Label
         {
             Text = "内网流量走VPN，公网流量走本地网卡。\n防止VPN路由劫持导致公网中断。",
             AutoSize = true
+        };
+
+        // Auth status
+        var deviceId = DeviceFingerprint.Generate();
+        var authStatus = !string.IsNullOrEmpty(_config.AuthToken) ? "已授权" : "未授权";
+        var authExpire = !string.IsNullOrEmpty(_config.AuthExpire) ? _config.AuthExpire : "-";
+        var lblAuth = new Label
+        {
+            Text = $"授权状态: {authStatus}  |  到期: {authExpire}\n设备码: {deviceId}",
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Consolas", 9),
+            Margin = new Padding(0, 10, 0, 0)
         };
 
         var btnCheckUpdate = new Button { Text = "检查更新", Size = new Size(150, 30), Margin = new Padding(0, 20, 0, 0) };
@@ -340,6 +363,7 @@ public class MainForm : Form
         panel.Controls.Add(title);
         panel.Controls.Add(ver);
         panel.Controls.Add(desc);
+        panel.Controls.Add(lblAuth);
         panel.Controls.Add(btnCheckUpdate);
 
         tab.Controls.Add(panel);
@@ -353,13 +377,12 @@ public class MainForm : Form
         if (_guard.State == MonitorState.Stopped)
         {
             _guard.Start();
-            _btnToggle.Text = "停止监控";
         }
         else
         {
             _guard.Stop();
-            _btnToggle.Text = "启动监控";
         }
+        // RefreshStatus reads actual state and updates button — don't set text manually
         RefreshStatus();
     }
 
@@ -368,10 +391,23 @@ public class MainForm : Form
         if (_guard.State == MonitorState.Stopped)
         {
             _guard.Start();
-            _btnToggle.Text = "停止监控";
         }
         Logger.Write("手动修复触发", LogLevel.Info);
         _guard.DoCheck();
+        RefreshStatus();
+    }
+
+    private void RestoreNetwork()
+    {
+        var result = MessageBox.Show(
+            "此操作将删除所有 /2 分流路由，恢复原始网络状态。\n\n" +
+            "如果你的 VPN 正在劫持路由，恢复后公网可能中断。\n确认继续？",
+            "恢复网络", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (result != DialogResult.Yes) return;
+
+        Logger.Write("用户触发恢复网络", LogLevel.Info);
+        _guard.RestoreNetwork();
+        RefreshStatus();
     }
 
     private void SaveSettings(object? sender, EventArgs e)
@@ -473,7 +509,15 @@ public class MainForm : Form
             var release = System.Text.Json.JsonDocument.Parse(json);
             var tagName = release.RootElement.GetProperty("tag_name").GetString() ?? "";
 
-            if (string.IsNullOrEmpty(tagName) || tagName == $"v{_config.AppVersion}")
+            if (string.IsNullOrEmpty(tagName))
+            {
+                if (!silent) MessageBox.Show("已是最新版本。", "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Semantic version comparison: only prompt if release is newer
+            var releaseVer = tagName.TrimStart('v', 'V');
+            if (!IsNewerVersion(releaseVer, _config.AppVersion))
             {
                 if (!silent) MessageBox.Show("已是最新版本。", "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
@@ -515,6 +559,31 @@ public class MainForm : Form
         {
             if (!silent) MessageBox.Show($"检查更新失败: {ex.Message}", "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    /// <summary>
+    /// Returns true if remoteVer is strictly newer than localVer (semantic versioning).
+    /// </summary>
+    private static bool IsNewerVersion(string remoteVer, string localVer)
+    {
+        try
+        {
+            var r = ParseVersion(remoteVer);
+            var l = ParseVersion(localVer);
+            if (r[0] != l[0]) return r[0] > l[0];
+            if (r[1] != l[1]) return r[1] > l[1];
+            return r[2] > l[2];
+        }
+        catch { return false; }
+    }
+
+    private static int[] ParseVersion(string ver)
+    {
+        var parts = ver.TrimStart('v', 'V').Split('.');
+        var result = new int[3];
+        for (int i = 0; i < 3; i++)
+            result[i] = i < parts.Length && int.TryParse(parts[i], out var n) ? n : 0;
+        return result;
     }
 
     private async Task DownloadAndInstallUpdate(string downloadUrl, string fileName)
@@ -636,6 +705,15 @@ del /f /q ""%~f0""
         }
     }
 
+    private void OnGuardHijackChanged(bool hijacked)
+    {
+        try
+        {
+            this.Invoke(() => RefreshHijackStatus(hijacked));
+        }
+        catch { }
+    }
+
     private void RefreshStatus()
     {
         try
@@ -669,7 +747,32 @@ del /f /q ""%~f0""
             _lblLastFix.Text = _config.LastFixTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-";
             _lblTotalFixes.Text = _config.TotalFixes.ToString();
 
+            RefreshHijackStatus(_guard.IsHijacked);
+
             _btnToggle.Text = _guard.State == MonitorState.Stopped ? "启动监控" : "停止监控";
+        }
+        catch { }
+    }
+
+    private void RefreshHijackStatus(bool hijacked)
+    {
+        try
+        {
+            if (_guard.State == MonitorState.Stopped)
+            {
+                _lblHijack.Text = "-";
+                _lblHijack.ForeColor = Color.Gray;
+            }
+            else if (hijacked)
+            {
+                _lblHijack.Text = "已劫持";
+                _lblHijack.ForeColor = Color.Red;
+            }
+            else
+            {
+                _lblHijack.Text = "正常";
+                _lblHijack.ForeColor = Color.Green;
+            }
         }
         catch { }
     }
@@ -716,7 +819,7 @@ del /f /q ""%~f0""
 
     // ===== Helper controls =====
 
-    private static Label CreateFieldLabel(string text) => new() { Text = text, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
-    private static Label CreateValueLabel(string text) => new() { Text = text, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 9) };
-    private static Label CreateSectionLabel(string text) => new() { Text = text, Font = new Font("Segoe UI", 10, FontStyle.Bold), AutoSize = true, ForeColor = Color.FromArgb(0, 100, 200), Margin = new Padding(0, 10, 0, 4) };
+    private static Label CreateFieldLabel(string text) => new() { Text = text, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Microsoft YaHei UI", 9F) };
+    private static Label CreateValueLabel(string text) => new() { Text = text, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Microsoft YaHei UI", 9F), ForeColor = Color.FromArgb(50, 50, 50) };
+    private static Label CreateSectionLabel(string text) => new() { Text = text, Font = new Font("Microsoft YaHei UI", 10, FontStyle.Bold), AutoSize = true, ForeColor = Color.FromArgb(0, 100, 200), Margin = new Padding(0, 10, 0, 4) };
 }
