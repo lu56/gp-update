@@ -78,70 +78,117 @@ GuiApp::~GuiApp() {
     if (hIconYellow) DestroyIcon(hIconYellow);
     if (hIconRed) DestroyIcon(hIconRed);
     if (hTrayMenu) DestroyMenu(hTrayMenu);
+    if (hGlobalFont) DeleteObject(hGlobalFont);
+    if (hLogFont) DeleteObject(hLogFont);
+}
+
+// ===== Apply global font to all child controls recursively =====
+
+void GuiApp::applyFontsRecursive(HWND parent) {
+    if (!hGlobalFont || !parent) return;
+    HWND hChild = FindWindowExW(parent, nullptr, nullptr, nullptr);
+    while (hChild) {
+        // Skip the log textbox — it uses its own Consolas font
+        if (hChild != hTxtLog) {
+            SendMessageW(hChild, WM_SETFONT, (WPARAM)hGlobalFont, MAKELPARAM(TRUE, 0));
+        }
+        applyFontsRecursive(hChild);
+        hChild = FindWindowExW(parent, hChild, nullptr, nullptr);
+    }
+}
+
+// ===== Page container subclass for WM_CTLCOLORSTATIC =====
+
+static LRESULT CALLBACK pageProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                          UINT_PTR idSubclass, DWORD_PTR refData) {
+    if (msg == WM_CTLCOLORSTATIC) {
+        HDC hdc = (HDC)wParam;
+        HWND hwndCtrl = (HWND)lParam;
+        int ctrlId = GetDlgCtrlID(hwndCtrl);
+
+        SetBkMode(hdc, TRANSPARENT);
+
+        GuiApp* self = reinterpret_cast<GuiApp*>(refData);
+        if (ctrlId == IDC_LBL_STATE && self) {
+            // Color the status label based on current state
+            switch (self->currentVisualState) {
+                case MonitorState::Running:
+                    SetTextColor(hdc, RGB(0, 150, 0));    // green
+                    break;
+                case MonitorState::Fixing:
+                    SetTextColor(hdc, RGB(200, 130, 0));  // amber
+                    break;
+                default:
+                    SetTextColor(hdc, RGB(200, 0, 0));    // red
+                    break;
+            }
+        } else {
+            SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
+        }
+        // Return window background brush so labels blend with parent
+        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+    }
+
+    if (msg == WM_DESTROY) {
+        RemoveWindowSubclass(hWnd, pageProc, idSubclass);
+    }
+
+    return DefSubclassProc(hWnd, msg, wParam, lParam);
 }
 
 // ===== Icon creation =====
 
 HICON GuiApp::createColorIcon(COLORREF color) {
-    // Create a 16x16 icon with a colored circle
+    // Create a 32x32 icon with a colored circle on dark background
+    const int SZ = 32;
+
     HDC hdcScreen = GetDC(nullptr);
-    HDC hdc = CreateCompatibleDC(hdcScreen);
-    HBITMAP hBmpColor = CreateCompatibleBitmap(hdcScreen, 16, 16);
-    HBITMAP hBmpMask = CreateBitmap(16, 16, 1, 1, nullptr);
-    ReleaseDC(nullptr, hdcScreen);
+    if (!hdcScreen) return nullptr;
 
-    HBITMAP hOld = (HBITMAP)SelectObject(hdc, hBmpColor);
+    // Color bitmap (32x32)
+    HDC hdcColor = CreateCompatibleDC(hdcScreen);
+    HBITMAP hBmpColor = CreateCompatibleBitmap(hdcScreen, SZ, SZ);
+    HBITMAP hOldColor = (HBITMAP)SelectObject(hdcColor, hBmpColor);
 
-    // Fill with transparent (green key)
-    HBRUSH hBg = CreateSolidBrush(RGB(0, 255, 0));
-    RECT rc = {0, 0, 16, 16};
-    FillRect(hdc, &rc, hBg);
+    // Dark rounded background
+    RECT rc = {0, 0, SZ, SZ};
+    HBRUSH hBg = CreateSolidBrush(RGB(28, 28, 30));
+    FillRect(hdcColor, &rc, hBg);
     DeleteObject(hBg);
 
-    // Draw filled circle
+    // Filled circle with color + white ring
     HBRUSH hCircle = CreateSolidBrush(color);
-    HPEN hPen = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
-    HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hCircle);
-    HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-    SelectObject(hdc, hCircle);
-    Ellipse(hdc, 1, 1, 15, 15);
-    SelectObject(hdc, hOldBrush);
-    SelectObject(hdc, hOldPen);
+    HPEN hRing = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    HBRUSH hOldBr = (HBRUSH)SelectObject(hdcColor, hCircle);
+    HPEN hOldPen = (HPEN)SelectObject(hdcColor, hRing);
+    Ellipse(hdcColor, 4, 4, SZ - 4, SZ - 4);
+    SelectObject(hdcColor, hOldBr);
+    SelectObject(hdcColor, hOldPen);
     DeleteObject(hCircle);
-    DeleteObject(hPen);
+    DeleteObject(hRing);
 
-    SelectObject(hdc, hOld);
-    DeleteDC(hdc);
+    SelectObject(hdcColor, hOldColor);
+    DeleteDC(hdcColor);
 
-    // Create mask - all zeros (no transparency mask, icon will show the circle)
-    HDC hdcMask = CreateCompatibleDC(nullptr);
+    // Mask bitmap — all black (fully opaque)
+    HDC hdcMask = CreateCompatibleDC(hdcScreen);
+    HBITMAP hBmpMask = CreateBitmap(SZ, SZ, 1, 1, nullptr);
     HBITMAP hOldMask = (HBITMAP)SelectObject(hdcMask, hBmpMask);
-    PatBlt(hdcMask, 0, 0, 16, 16, WHITENESS);
-    // Draw black where the circle is (non-transparent area)
-    HDC hdcMaskSrc = CreateCompatibleDC(nullptr);
-    HBITMAP hBmpColorCopy = CreateCompatibleBitmap(GetDC(nullptr), 16, 16);
-    HDC hdcColorCopy = CreateCompatibleDC(nullptr);
-    HBITMAP hOldCC = (HBITMAP)SelectObject(hdcColorCopy, hBmpColorCopy);
-    // Copy color bitmap
-    HDC hdcTmp = CreateCompatibleDC(nullptr);
-    HBITMAP hOldTmp = (HBITMAP)SelectObject(hdcTmp, hBmpColorCopy);
-    BitBlt(hdcTmp, 0, 0, 16, 16, hdc, 0, 0, SRCCOPY);
-    // This is getting complicated - let me use the simpler ICONINFO approach
+    PatBlt(hdcMask, 0, 0, SZ, SZ, BLACKNESS);
+    SelectObject(hdcMask, hOldMask);
+    DeleteDC(hdcMask);
 
+    ReleaseDC(nullptr, hdcScreen);
+
+    // Build icon
     ICONINFO ii = {};
     ii.fIcon = TRUE;
-    ii.xHotspot = 0;
-    ii.yHotspot = 0;
     ii.hbmMask = hBmpMask;
     ii.hbmColor = hBmpColor;
-
     HICON hIcon = CreateIconIndirect(&ii);
 
     DeleteObject(hBmpColor);
     DeleteObject(hBmpMask);
-    DeleteDC(hdcMask);
-    DeleteDC(hdcColorCopy);
-    DeleteDC(hdcTmp);
 
     return hIcon;
 }
@@ -188,13 +235,22 @@ void GuiApp::setupCallbacks() {
 bool GuiApp::createMainWindow() {
     static const wchar_t* className = L"GatewayPolicyMainWnd";
 
+    // Create global UI font (Microsoft YaHei UI, ~10pt)
+    hGlobalFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH, L"Microsoft YaHei UI");
+
     WNDCLASSEXW wc = {sizeof(wc)};
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = className;
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    // Load app icon from resource (fallback to system default)
+    wc.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APPICON));
+    if (!wc.hIcon) wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIconSm = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON, 16, 16, 0);
+    if (!wc.hIconSm) wc.hIconSm = (HICON)LoadIcon(nullptr, IDI_APPLICATION);
     RegisterClassExW(&wc);
 
     hMainWnd = CreateWindowExW(0, className, L"GatewayPolicy",
@@ -220,11 +276,13 @@ bool GuiApp::createMainWindow() {
     ti.pszText = (LPWSTR)L"\x5173\x4E8E"; // 关于
     TabCtrl_InsertItem(hTab, 3, &ti);
 
-    // Create page container windows (one per tab)
+    // Create page container windows (one per tab) and subclass them
     for (int i = 0; i < 4; i++) {
         hPages[i] = CreateWindowExW(0, L"STATIC", L"",
             WS_CHILD | (i == 0 ? WS_VISIBLE : 0) | SS_LEFT,
             2, 28, 574, 448, hTab, nullptr, hInst, nullptr);
+        // Subclass page container for WM_CTLCOLORSTATIC (status label colors)
+        SetWindowSubclass(hPages[i], pageProc, i, (DWORD_PTR)this);
     }
 
     // Build tab pages using page containers as parents
@@ -232,6 +290,9 @@ bool GuiApp::createMainWindow() {
     buildSettingsTab(hPages[1]);
     buildLogTab(hPages[2]);
     buildAboutTab(hPages[3]);
+
+    // Apply global font to all controls (log textbox gets its own font in buildLogTab)
+    applyFontsRecursive(hMainWnd);
 
     setupTray();
     setupCallbacks();
@@ -366,11 +427,11 @@ void GuiApp::buildLogTab(HWND parent) {
         WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_HSCROLL,
         20, 40, 540, 370, parent, (HMENU)IDC_TXT_LOG, hInst, nullptr);
 
-    // Set monospace font
-    HFONT hFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    // Set monospace font (stored as member, cleaned up in destructor)
+    hLogFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         FIXED_PITCH | FF_DONTCARE, L"Consolas");
-    SendMessageW(hTxtLog, WM_SETFONT, (WPARAM)hFont, TRUE);
+    SendMessageW(hTxtLog, WM_SETFONT, (WPARAM)hLogFont, TRUE);
 
     // Dark background for log (requires WM_CTLCOLOR handling - skip for now)
 
@@ -429,6 +490,8 @@ void GuiApp::showTab(int index) {
 
 void GuiApp::refreshStatus() {
     auto state = engine.getState();
+    currentVisualState = state;  // Track for WM_CTLCOLORSTATIC coloring
+
     const wchar_t* stateText;
     switch (state) {
         case MonitorState::Running:
@@ -442,7 +505,8 @@ void GuiApp::refreshStatus() {
             break;
     }
     SetWindowTextW(hLblState, stateText);
-    // Can't easily set label color without WM_CTLCOLORSTATIC handling
+    // Force redraw of status label so WM_CTLCOLORSTATIC applies new color
+    InvalidateRect(hLblState, nullptr, TRUE);
 
     // NIC info
     std::wstring mainNic = engine.getMainNicName();
@@ -863,7 +927,9 @@ int GuiApp::run() {
     Logger::instance().setCallback([this](const std::string& msg, LogLevel level) {
         if (hMainWnd) {
             auto* str = new std::string(msg);
-            PostMessageW(hMainWnd, WM_APP_LOG, (WPARAM)level, (LPARAM)str);
+            if (!PostMessageW(hMainWnd, WM_APP_LOG, (WPARAM)level, (LPARAM)str)) {
+                delete str; // PostMessage failed (queue full or window gone)
+            }
         }
     });
 

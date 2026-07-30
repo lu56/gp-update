@@ -20,7 +20,7 @@ $(TARGET): $(OBJ) $(RES)
 build/%.o: $(SRC_DIR)/%.cpp | build
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(RES): resource.rc app.manifest | build
+$(RES): resource.rc app.manifest app.ico | build
 	$(RC) resource.rc -O coff -o $@
 
 build:

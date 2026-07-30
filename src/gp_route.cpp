@@ -6,7 +6,6 @@
 #include <iphlpapi.h>
 #include <windows.h>
 #include <ctime>
-#include <sstream>
 #include <algorithm>
 #include <cstring>
 
@@ -221,24 +220,36 @@ static std::string runRouteExe(const std::string& args) {
     std::string cmd = "route.exe " + args;
     if (CreateProcessA(nullptr, const_cast<char*>(cmd.c_str()), nullptr, nullptr, TRUE,
                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        // Close write end in parent so ReadFile returns when child exits
         CloseHandle(hWrite);
+        hWrite = nullptr; // Mark as closed to prevent double-close
         char buf[8192];
         DWORD read = 0;
         while (ReadFile(hRead, buf, sizeof(buf), &read, nullptr) && read > 0) {
             result.append(buf, read);
+            // Safety guard: prevent OOM if route.exe produces insane output
+            if (result.size() > 10 * 1024 * 1024) { // 10MB limit
+                Logger::instance().write("runRouteExe: output exceeded 10MB limit, aborting", LogLevel::Error);
+                break;
+            }
         }
         WaitForSingleObject(pi.hProcess, 5000);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
+    } else {
+        Logger::instance().write("runRouteExe: CreateProcessA failed, err=" +
+            std::to_string(GetLastError()), LogLevel::Error);
     }
-    CloseHandle(hRead);
-    CloseHandle(hWrite);
+    // Only close handles that haven't been closed yet
+    if (hRead) CloseHandle(hRead);
+    if (hWrite) CloseHandle(hWrite);
     return result;
 }
 
 std::string RouteEngine::getRouteTable() {
     time_t now = time(nullptr);
-    if (!routeCache.empty() && (now - routeCacheTimeT) < 2) {
+    // 3-second cache covers all calls within a single doCheck cycle
+    if (!routeCache.empty() && (now - routeCacheTimeT) < 3) {
         return routeCache;
     }
     routeCache = runRouteExe("print -4");
@@ -329,13 +340,24 @@ bool RouteEngine::routeExists(const std::string& cidr) {
         std::string dest, mask;
         cidrToRoutePrint(cidr, dest, mask);
 
-        std::istringstream ss(output);
-        std::string line;
-        while (std::getline(ss, line)) {
+        // Manual line parsing instead of istringstream (avoids potential stream bug)
+        int lineNum = 0;
+        size_t pos = 0;
+        while (pos < output.size()) {
+            // Find end of line
+            size_t lineEnd = output.find('\n', pos);
+            if (lineEnd == std::string::npos) lineEnd = output.size();
+            std::string line = output.substr(pos, lineEnd - pos);
+            // Strip carriage return
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            pos = (lineEnd < output.size()) ? lineEnd + 1 : output.size();
+
+            lineNum++;
             auto parts = splitWs(line);
             if (parts.size() >= 5 && parts[0] == dest && parts[1] == mask) {
                 return true;
             }
+            if (lineNum > 500) break; // Safety limit
         }
     } catch (...) {}
     return false;
@@ -348,9 +370,16 @@ bool RouteEngine::routeExistsOnInterface(const std::string& cidr, int ifIndex) {
         cidrToRoutePrint(cidr, dest, mask);
         std::string ifIp = getInterfaceIp(ifIndex);
 
-        std::istringstream ss(output);
-        std::string line;
-        while (std::getline(ss, line)) {
+        size_t pos = 0;
+        int lineNum = 0;
+        while (pos < output.size()) {
+            size_t lineEnd = output.find('\n', pos);
+            if (lineEnd == std::string::npos) lineEnd = output.size();
+            std::string line = output.substr(pos, lineEnd - pos);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            pos = (lineEnd < output.size()) ? lineEnd + 1 : output.size();
+
+            lineNum++;
             auto parts = splitWs(line);
             if (parts.size() < 5 || parts[0] != dest || parts[1] != mask) continue;
             if (!ifIp.empty()) {
@@ -367,15 +396,19 @@ std::string RouteEngine::getTapGateway(int ifIndex) {
         std::string ifIp = getInterfaceIp(ifIndex);
         std::string output = getRouteTable();
 
-        std::istringstream ss(output);
-        std::string line;
-        while (std::getline(ss, line)) {
+        size_t pos = 0;
+        while (pos < output.size()) {
+            size_t lineEnd = output.find('\n', pos);
+            if (lineEnd == std::string::npos) lineEnd = output.size();
+            std::string line = output.substr(pos, lineEnd - pos);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            pos = (lineEnd < output.size()) ? lineEnd + 1 : output.size();
+
             auto parts = splitWs(line);
             if (parts.size() < 5) continue;
             if (!ifIp.empty() && parts[3] != ifIp) continue;
             std::string gw = parts[2];
             if (gw == "On-link") continue;
-            // Validate it's an IP address and not 0.0.0.0
             unsigned int a, b, c, d;
             if (sscanf(gw.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) == 4 &&
                 !(a == 0 && b == 0 && c == 0 && d == 0)) {
@@ -391,9 +424,14 @@ int RouteEngine::getAdapterMetric(int ifIndex) {
         std::string ifIp = getInterfaceIp(ifIndex);
         std::string output = getRouteTable();
 
-        std::istringstream ss(output);
-        std::string line;
-        while (std::getline(ss, line)) {
+        size_t pos = 0;
+        while (pos < output.size()) {
+            size_t lineEnd = output.find('\n', pos);
+            if (lineEnd == std::string::npos) lineEnd = output.size();
+            std::string line = output.substr(pos, lineEnd - pos);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            pos = (lineEnd < output.size()) ? lineEnd + 1 : output.size();
+
             auto parts = splitWs(line);
             if (parts.size() < 5) continue;
             if (parts[0] != "0.0.0.0" || parts[1] != "0.0.0.0") continue;
@@ -419,7 +457,8 @@ void RouteEngine::doCheck() {
         bool hijacked = false;
 
         // Primary check: def1 hijack routes
-        if (routeExists("0.0.0.0/1") || routeExists("128.0.0.0/1")) {
+        bool hasDef1 = routeExists("0.0.0.0/1");
+        if (hasDef1 || routeExists("128.0.0.0/1")) {
             hijacked = true;
             if (!wasHijacked) {
                 log("Detected VPN def1 hijack route (0.0.0.0/1 or 128.0.0.0/1)", LogLevel::Info);

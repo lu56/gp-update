@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <windows.h>
+#include <commctrl.h>
 #include "gp_config.h"
 #include "gp_route.h"
 
@@ -13,6 +14,9 @@ namespace gp {
 #define WM_APP_REVAL        (WM_APP + 13)
 #define WM_APP_AUTOUPDATE   (WM_APP + 14)
 #define WM_TRAYICON         (WM_APP + 1)
+
+// App icon resource ID
+#define IDI_APPICON 100
 
 // Control IDs
 enum ControlIds {
@@ -45,6 +49,9 @@ public:
 
     int run(); // Message loop
 
+    // Accessed by page subclass procedure for status color
+    MonitorState currentVisualState = MonitorState::Stopped;
+
 private:
     AppConfig& config;
     RouteEngine& engine;
@@ -53,6 +60,10 @@ private:
     HWND hMainWnd = nullptr;
     HWND hTab = nullptr;
     HINSTANCE hInst = nullptr;
+
+    // Fonts
+    HFONT hGlobalFont = nullptr;  // Microsoft YaHei UI for all controls
+    HFONT hLogFont = nullptr;     // Consolas for log textbox
 
     // Status tab controls
     HWND hLblState, hLblMainNic, hLblTapNic, hLblLastFix, hLblTotalFixes;
@@ -89,6 +100,7 @@ private:
     void buildAboutTab(HWND parent);
     void setupTray();
     void setupCallbacks();
+    void applyFontsRecursive(HWND parent);
 
     // Helpers
     void showTab(int index);
