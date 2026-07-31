@@ -28,6 +28,7 @@ public class MainForm : Form
     private Button _btnToggle = null!;
     private Button _btnFixNow = null!;
     private Button _btnRestore = null!;
+    private Button _btnViewRoutes = null!;
 
     // Settings tab
     private NumericUpDown _numInterval = null!;
@@ -36,9 +37,6 @@ public class MainForm : Form
     private CheckBox _chkAutoStart = null!;
     private CheckBox _chkMinimizeTray = null!;
     private CheckBox _chkNotify = null!;
-    private TextBox _txtBarkServer = null!;
-    private TextBox _txtBarkKey = null!;
-    private CheckBox _chkBark = null!;
     private DataGridView _dgCustomRoutes = null!;
     private ListBox _lbPrivateNets = null!;
     private CheckBox _chkAutoUpdate = null!;
@@ -125,11 +123,11 @@ public class MainForm : Form
     private void InitializeForm()
     {
         Text = "GatewayPolicy";
-        Size = new Size(600, 580);
+        Size = new Size(600, 520);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
-        MinimumSize = new Size(500, 480);
+        MinimumSize = new Size(500, 420);
         Font = new Font("Microsoft YaHei UI", 9F);
 
         // Set window icon from embedded app.ico
@@ -173,12 +171,15 @@ public class MainForm : Form
         _btnToggle.Click += (s, e) => ToggleMonitor();
         _btnFixNow = new Button { Text = "立即修复", Size = new Size(100, 34), Margin = new Padding(0, 0, 8, 0) };
         _btnFixNow.Click += (s, e) => FixNow();
-        _btnRestore = new Button { Text = "恢复网络", Size = new Size(100, 34), Margin = new Padding(0, 0, 0, 0) };
+        _btnRestore = new Button { Text = "恢复网络", Size = new Size(100, 34), Margin = new Padding(0, 0, 8, 0) };
         _btnRestore.Click += (s, e) => RestoreNetwork();
+        _btnViewRoutes = new Button { Text = "查看路由", Size = new Size(100, 34), Margin = new Padding(0, 0, 0, 0) };
+        _btnViewRoutes.Click += (s, e) => ViewRoutes();
 
         btnPanel.Controls.Add(_btnToggle);
         btnPanel.Controls.Add(_btnFixNow);
         btnPanel.Controls.Add(_btnRestore);
+        btnPanel.Controls.Add(_btnViewRoutes);
 
         panel.Controls.Add(btnPanel, 0, 6);
         panel.SetColumnSpan(btnPanel, 2);
@@ -272,21 +273,6 @@ public class MainForm : Form
 
         panel.Controls.Add(CreateFieldLabel("规则:"), 0, row);
         panel.Controls.Add(_dgCustomRoutes, 1, row); row++;
-
-        // Bark push
-        panel.Controls.Add(CreateSectionLabel("Bark 推送"), 0, row); panel.SetColumnSpan(panel.Controls[panel.Controls.Count - 1], 2); row++;
-
-        _chkBark = new CheckBox { Text = "启用 Bark 推送", Checked = _config.BarkEnabled, Dock = DockStyle.Left };
-        panel.Controls.Add(CreateFieldLabel("Bark:"), 0, row);
-        panel.Controls.Add(_chkBark, 1, row); row++;
-
-        panel.Controls.Add(CreateFieldLabel("服务器:"), 0, row);
-        _txtBarkServer = new TextBox { Text = _config.BarkServer, Dock = DockStyle.Fill, PlaceholderText = "https://api.day.app" };
-        panel.Controls.Add(_txtBarkServer, 1, row); row++;
-
-        panel.Controls.Add(CreateFieldLabel("设备密钥:"), 0, row);
-        _txtBarkKey = new TextBox { Text = _config.BarkDeviceKey, Dock = DockStyle.Fill, PlaceholderText = "你的 Bark deviceKey" };
-        panel.Controls.Add(_txtBarkKey, 1, row); row++;
 
         // Update
         panel.Controls.Add(CreateSectionLabel("自动更新"), 0, row); panel.SetColumnSpan(panel.Controls[panel.Controls.Count - 1], 2); row++;
@@ -426,6 +412,54 @@ public class MainForm : Form
         RefreshStatus();
     }
 
+    private void ViewRoutes()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "route.exe",
+                Arguments = "print",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null) return;
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(5000);
+
+            // Show in a resizable dialog
+            using var dlg = new Form
+            {
+                Text = "当前路由表 (route print)",
+                Size = new Size(780, 560),
+                StartPosition = FormStartPosition.CenterParent,
+                Font = new Font("Microsoft YaHei UI", 9F)
+            };
+            var txt = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Both,
+                Font = new Font("Consolas", 9),
+                Text = output,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.LightGray
+            };
+            var btnClose = new Button { Text = "关闭", Dock = DockStyle.Bottom, Height = 36 };
+            btnClose.Click += (s, e) => dlg.Close();
+            dlg.Controls.Add(txt);
+            dlg.Controls.Add(btnClose);
+            dlg.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"获取路由表失败: {ex.Message}", "GatewayPolicy", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private void SaveSettings(object? sender, EventArgs e)
     {
         _config.CheckIntervalSeconds = (int)_numInterval.Value;
@@ -434,9 +468,6 @@ public class MainForm : Form
         _config.AutoStart = _chkAutoStart.Checked;
         _config.MinimizeToTray = _chkMinimizeTray.Checked;
         _config.ShowNotification = _chkNotify.Checked;
-        _config.BarkEnabled = _chkBark.Checked;
-        _config.BarkServer = _txtBarkServer.Text.Trim();
-        _config.BarkDeviceKey = _txtBarkKey.Text.Trim();
         _config.AutoUpdateCheck = _chkAutoUpdate.Checked;
         _config.UpdateRepo = _txtUpdateRepo.Text.Trim();
 

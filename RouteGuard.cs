@@ -317,11 +317,6 @@ public class RouteGuard
             _lastFixTime = DateTime.Now;
 
             OnFixCompleted?.Invoke();
-
-            if (_config.BarkEnabled && !string.IsNullOrEmpty(_config.BarkServer))
-            {
-                _ = SendBarkNotification();
-            }
         }
         catch (Exception ex)
         {
@@ -562,28 +557,6 @@ public class RouteGuard
             return output;
         }
         catch { return ""; }
-    }
-
-    private async Task SendBarkNotification()
-    {
-        try
-        {
-            var server = _config.BarkServer.TrimEnd('/');
-            var key = _config.BarkDeviceKey;
-            var title = Uri.EscapeDataString(_config.BarkTitle);
-            var body = Uri.EscapeDataString($"Route fix #{_config.TotalFixes} at {DateTime.Now:HH:mm:ss}");
-            var url = $"{server}/{key}/{title}/{body}";
-            if (!string.IsNullOrEmpty(_config.BarkSound))
-                url += $"?sound={_config.BarkSound}";
-
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            await http.GetAsync(url);
-            Log("Bark notification sent", LogLevel.Info);
-        }
-        catch (Exception ex)
-        {
-            Log($"Bark send error: {ex.Message}", LogLevel.Warning);
-        }
     }
 
     private void Log(string message, LogLevel level)

@@ -67,13 +67,6 @@ static class Program
 
         using var form = new MainForm(config, guard);
 
-        // Auto-start monitoring — must be in Shown event so the UI has a handle
-        // and this.Invoke() works when OnStateChanged fires.
-        if (config.AutoStart)
-        {
-            form.Shown += (s, e) => guard.Start();
-        }
-
         Application.Run(form);
     }
 
